@@ -38,11 +38,19 @@ export const getJupiterQuote = async (params: QuoteParams) => {
     });
     
     const response = await fetch(`${JUPITER_QUOTE_API}?${queryParams.toString()}`);
-    
+
     if (!response.ok) {
-      throw new Error(`Jupiter quote API error: ${response.status} ${response.statusText}`);
+      let errorBody = `Status: ${response.status} ${response.statusText}`;
+      try {
+        const jsonError = await response.json();
+        errorBody = JSON.stringify(jsonError);
+      } catch (e) {
+        // Ignore if response body is not JSON
+      }
+      console.error('Jupiter quote API error response:', errorBody);
+      throw new Error(`Jupiter quote API error: ${errorBody}`);
     }
-    
+
     const data = await response.json();
     return data;
   } catch (error) {
@@ -66,11 +74,19 @@ export const prepareJupiterSwapTransaction = async (params: SwapParams) => {
         userPublicKey,
       }),
     });
-    
+
     if (!response.ok) {
-      throw new Error(`Jupiter swap API error: ${response.status} ${response.statusText}`);
+      let errorBody = `Status: ${response.status} ${response.statusText}`;
+      try {
+        const jsonError = await response.json();
+        errorBody = JSON.stringify(jsonError);
+      } catch (e) {
+        // Ignore if response body is not JSON
+      }
+      console.error('Jupiter swap API error response:', errorBody);
+      throw new Error(`Jupiter swap API error: ${errorBody}`);
     }
-    
+
     const data = await response.json();
     return data;
   } catch (error) {
@@ -98,17 +114,35 @@ export const executeJupiterSwap = async (swapTransaction: any, wallet: any, conn
     }
     
     // Sign and send transaction
-    const signature = await wallet.sendTransaction(transaction, connection);
-    
+    let signature;
+    try {
+      signature = await wallet.sendTransaction(transaction, connection);
+      console.log('Transaction sent, signature:', signature);
+    } catch (signError) {
+      console.error('Error signing/sending transaction:', signError);
+      throw signError; // Re-throw the specific error
+    }
+
     // Wait for confirmation
-    const confirmation = await connection.confirmTransaction(signature, 'confirmed');
-    
+    let confirmation;
+    try {
+      confirmation = await connection.confirmTransaction(signature, 'confirmed');
+      console.log('Transaction confirmed:', confirmation);
+    } catch (confirmError) {
+      console.error('Error confirming transaction:', confirmError);
+      // Optionally, you might want to handle confirmation errors differently
+      // For now, we'll re-throw
+      throw confirmError;
+    }
+
     return {
       signature,
       confirmation,
     };
   } catch (error) {
-    console.error('Error executing Jupiter swap:', error);
+    // Log the full error object for better debugging
+    console.error('Full error object during Jupiter swap execution:', error);
+    // Keep the original error throwing behavior
     throw error;
   }
 };
@@ -124,16 +158,15 @@ const useJupiterTrading = () => {
     const checkWalletConnection = async () => {
       if (typeof window !== 'undefined' && window.phantom?.solana) {
         try {
-          // Check if already connected
-          const isPhantomConnected = window.phantom.solana.isConnected;
-          
-          if (isPhantomConnected) {
-            const response = await window.phantom.solana.connect({ onlyIfTrusted: true });
-            setWalletPublicKey(response.publicKey.toString());
-            setIsWalletConnected(true);
-            setWallet(window.phantom.solana);
-          }
+          // Attempt to connect silently if already trusted by the user
+          const response = await window.phantom.solana.connect({ onlyIfTrusted: true });
+          // If connect succeeds, the wallet is connected and trusted
+          setWalletPublicKey(response.publicKey.toString());
+          setIsWalletConnected(true);
+          setWallet(window.phantom.solana);
         } catch (error) {
+          // Handle error (e.g., wallet not connected or user rejected connection)
+          // We can log this, but essentially means the wallet isn't connected for our purposes here.
           console.error('Error checking wallet connection:', error);
         }
       }
@@ -228,10 +261,12 @@ const useJupiterTrading = () => {
         strategy,
       };
     } catch (error) {
-      console.error('Trade execution error:', error);
+      // Log the full error object for better debugging
+      console.error('Full error object during trade execution:', error);
       return {
         success: false,
-        error: error instanceof Error ? error.message : 'Unknown error',
+        // Provide more detail if available, otherwise keep original message
+        error: error instanceof Error ? error.message : JSON.stringify(error),
       };
     }
   };
