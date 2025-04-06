@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react'; // Import useRef
 import { useWallet } from '@solana/wallet-adapter-react'; // Import useWallet
 import { DEFAULT_STOP_LOSS_CONFIG, Position, checkStopLoss, formatStopLossMessage } from '@/lib/safetyFeatures';
 // Remove .ts extension from import
@@ -43,7 +43,8 @@ const BotControl = ({ strategyParams }: { strategyParams: StrategyParams }) => {
   const [stopLossConfig, setStopLossConfig] = useState(DEFAULT_STOP_LOSS_CONFIG);
   const [stopLossTriggered, setStopLossTriggered] = useState(false);
   const [stopLossMessage, setStopLossMessage] = useState('');
-  const [tradingInterval, setTradingInterval] = useState<NodeJS.Timeout | null>(null);
+  // Use useRef to store the interval ID
+  const tradingIntervalRef = useRef<NodeJS.Timeout | null>(null); 
   const [isProcessingTrade, setIsProcessingTrade] = useState(false);
 
   // Get wallet context using useWallet hook
@@ -54,12 +55,14 @@ const BotControl = ({ strategyParams }: { strategyParams: StrategyParams }) => {
   
   // Clean up interval on unmount
   useEffect(() => {
+    // Return a cleanup function
     return () => {
-      if (tradingInterval) {
-        clearInterval(tradingInterval);
+      // Clear the interval using the ref's current value
+      if (tradingIntervalRef.current) { 
+        clearInterval(tradingIntervalRef.current);
       }
     };
-  }, [tradingInterval]);
+  }, []); // Empty dependency array ensures this runs only on mount and unmount
   
   // Function to start trading bot
   const startBot = async () => {
@@ -84,9 +87,10 @@ const BotControl = ({ strategyParams }: { strategyParams: StrategyParams }) => {
   // Function to stop trading bot
   const stopBot = () => {
     setIsRunning(false);
-    if (tradingInterval) {
-      clearInterval(tradingInterval);
-      setTradingInterval(null);
+    // Clear interval using the ref
+    if (tradingIntervalRef.current) { 
+      clearInterval(tradingIntervalRef.current);
+      tradingIntervalRef.current = null; // Reset the ref
     }
   };
   
@@ -266,7 +270,8 @@ const BotControl = ({ strategyParams }: { strategyParams: StrategyParams }) => {
       
     }, 10000); // Simulate a trade every 10 seconds
     
-    setTradingInterval(interval);
+    // Store interval ID in the ref
+    tradingIntervalRef.current = interval; 
   };
   
   // Start real trading with Jupiter
@@ -301,7 +306,8 @@ const BotControl = ({ strategyParams }: { strategyParams: StrategyParams }) => {
       
     }, 60000); // Execute a trade every minute
     
-    setTradingInterval(interval);
+    // Store interval ID in the ref
+    tradingIntervalRef.current = interval; 
   };
   
   // Execute a real trade using Jupiter
@@ -401,10 +407,31 @@ const BotControl = ({ strategyParams }: { strategyParams: StrategyParams }) => {
   
   // Fetch current price for a trading pair
   const fetchCurrentPrice = async (pair: string) => {
+    // Only fetch SOL price for now, ignore pair parameter
+    const apiKey = process.env.NEXT_PUBLIC_COINGECKO_API_KEY;
+    let url = 'https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd';
+    
+    // Add API key if available
+    if (apiKey) {
+      url += `&x_cg_demo_api_key=${apiKey}`;
+    } else {
+      // Warn if key is missing, as requests might fail without it
+      console.warn('CoinGecko API key not found. Price fetching might be unreliable.');
+    }
+
     try {
-      // In a real implementation, this would fetch the current price from an API
-      // For now, we'll use a simple fetch to CoinGecko for SOL price
-      const response = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd');
+      const response = await fetch(url);
+      
+      if (!response.ok) {
+        // Log CoinGecko API errors
+        console.error(`CoinGecko API error: ${response.status} ${response.statusText}`);
+        try {
+          const errorData = await response.json();
+          console.error('CoinGecko error details:', errorData);
+        } catch (e) { /* Ignore if error response is not JSON */ }
+        return null; // Return null on error
+      }
+
       const data = await response.json();
       
       if (data && data.solana && data.solana.usd) {
