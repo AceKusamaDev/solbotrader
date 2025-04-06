@@ -1,8 +1,10 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
+import { useWallet } from '@solana/wallet-adapter-react'; // Import useWallet
 import { DEFAULT_STOP_LOSS_CONFIG, Position, checkStopLoss, formatStopLossMessage } from '@/lib/safetyFeatures';
-import useJupiterTrading, { SOL_MINT, USDC_MINT } from '@/lib/jupiter.ts';
+// Remove .ts extension from import
+import useJupiterTrading, { SOL_MINT, USDC_MINT } from '@/lib/jupiter'; 
 
 // Define StrategyParams interface
 export interface StrategyParams {
@@ -16,21 +18,39 @@ export interface StrategyParams {
   action: 'buy' | 'sell';
 }
 
+// Define Trade interface for state typing
+interface Trade {
+  timestamp: string;
+  pair: string;
+  action: 'buy' | 'sell';
+  amount: number;
+  price: string; // Keep as string since it's sometimes '0' on failure
+  strategy: string;
+  success: boolean;
+  signature?: string; // Optional signature
+  error?: string; // Optional error message
+}
+
 // BotControl component with real trading functionality
-const BotControl = ({ strategyParams }) => {
+// Add explicit type for strategyParams prop
+const BotControl = ({ strategyParams }: { strategyParams: StrategyParams }) => { 
   const [isRunning, setIsRunning] = useState(false);
   const [isTestMode, setIsTestMode] = useState(true);
-  const [lastTrade, setLastTrade] = useState(null);
-  const [tradeHistory, setTradeHistory] = useState([]);
+  // Use Trade type for state
+  const [lastTrade, setLastTrade] = useState<Trade | null>(null); 
+  const [tradeHistory, setTradeHistory] = useState<Trade[]>([]); 
   const [activePositions, setActivePositions] = useState<Position[]>([]);
   const [stopLossConfig, setStopLossConfig] = useState(DEFAULT_STOP_LOSS_CONFIG);
   const [stopLossTriggered, setStopLossTriggered] = useState(false);
   const [stopLossMessage, setStopLossMessage] = useState('');
   const [tradingInterval, setTradingInterval] = useState<NodeJS.Timeout | null>(null);
   const [isProcessingTrade, setIsProcessingTrade] = useState(false);
+
+  // Get wallet context using useWallet hook
+  const { publicKey, connected: isWalletConnected, sendTransaction } = useWallet(); 
   
-  // Get Jupiter trading functions
-  const { executeTradeWithStrategy, isWalletConnected, walletPublicKey } = useJupiterTrading();
+  // Get Jupiter trading function (no longer provides wallet state)
+  const { executeTradeWithStrategy } = useJupiterTrading(); 
   
   // Clean up interval on unmount
   useEffect(() => {
@@ -43,7 +63,8 @@ const BotControl = ({ strategyParams }) => {
   
   // Function to start trading bot
   const startBot = async () => {
-    if (!isWalletConnected || !walletPublicKey) {
+    // Use connected and publicKey from useWallet
+    if (!isWalletConnected || !publicKey) { 
       alert("Please connect your Phantom wallet first");
       return;
     }
@@ -106,17 +127,22 @@ const BotControl = ({ strategyParams }) => {
             inputMint,
             outputMint,
             amountInSmallestUnit,
-            stopLossConfig.slippage,
-            'Stop Loss'
+            0.5, // Use fixed 0.5% slippage like regular trades
+            'Stop Loss',
+            // Pass wallet context
+            publicKey,
+            sendTransaction,
+            publicKey?.toBase58() || null 
           );
           
           if (result.success) {
             // Create exit trade record
             const now = new Date();
-            const exitTrade = {
+            // Cast exitAction to the correct type
+            const exitTrade: Trade = { 
               timestamp: now.toISOString(),
               pair: position.pair,
-              action: exitAction,
+              action: exitAction as 'buy' | 'sell', 
               amount: position.amount,
               price: currentPrice.toFixed(2),
               strategy: 'Stop Loss',
@@ -146,10 +172,11 @@ const BotControl = ({ strategyParams }) => {
         // Test mode - simulate exit trade
         const exitAction = position.action === 'buy' ? 'sell' : 'buy';
         const now = new Date();
-        const exitTrade = {
+        // Cast exitAction to the correct type
+        const exitTrade: Trade = { 
           timestamp: now.toISOString(),
           pair: position.pair,
-          action: exitAction,
+          action: exitAction as 'buy' | 'sell', 
           amount: position.amount,
           price: currentPrice.toFixed(2),
           strategy: 'Stop Loss',
@@ -188,12 +215,13 @@ const BotControl = ({ strategyParams }) => {
       const amount = parseFloat((Math.random() * strategyParams.amount).toFixed(3));
       
       // Create simulated trade
-      const trade = {
+      // Cast action to the correct type
+      const trade: Trade = { 
         timestamp: now.toISOString(),
         pair: strategyParams.pair,
-        action,
+        action: action as 'buy' | 'sell', 
         amount,
-        price,
+        price: price.toString(), // Ensure price is string
         strategy: strategyParams.type,
         success: Math.random() > 0.1, // 90% success rate
         signature: 'simulated_tx_' + Math.random().toString(36).substring(2, 15),
@@ -243,7 +271,8 @@ const BotControl = ({ strategyParams }) => {
   
   // Start real trading with Jupiter
   const startRealTrading = async () => {
-    if (!isWalletConnected || !walletPublicKey) {
+    // Remove check for walletPublicKey (no longer exists here)
+    if (!isWalletConnected || !publicKey) { 
       alert("Please connect your Phantom wallet first");
       return;
     }
@@ -295,13 +324,17 @@ const BotControl = ({ strategyParams }) => {
       // Execute trade with Jupiter
       const result = await executeTradeWithStrategy(
         inputMint,
-        outputMint,
-        amountInSmallestUnit,
-        0.5, // 0.5% slippage
-        strategyParams.type
-      );
-      
-      console.log('Trade result:', result);
+            outputMint,
+            amountInSmallestUnit,
+            0.5, // 0.5% slippage
+            strategyParams.type,
+            // Pass wallet context
+            publicKey,
+            sendTransaction,
+            publicKey?.toBase58() || null
+          );
+          
+          console.log('Trade result:', result);
       
       if (result.success) {
         // Get current price
@@ -310,10 +343,11 @@ const BotControl = ({ strategyParams }) => {
         
         // Create trade record
         const now = new Date();
-        const trade = {
+        // Ensure type safety
+        const trade: Trade = { 
           timestamp: now.toISOString(),
           pair: strategyParams.pair,
-          action: strategyParams.action,
+          action: strategyParams.action, // Already 'buy' | 'sell' from StrategyParams
           amount: strategyParams.amount,
           price: currentPrice.toFixed(2),
           strategy: strategyParams.type,
@@ -342,10 +376,11 @@ const BotControl = ({ strategyParams }) => {
         
         // Create failed trade record
         const now = new Date();
-        const failedTrade = {
+        // Ensure type safety
+        const failedTrade: Trade = { 
           timestamp: now.toISOString(),
           pair: strategyParams.pair,
-          action: strategyParams.action,
+          action: strategyParams.action, // Already 'buy' | 'sell' from StrategyParams
           amount: strategyParams.amount,
           price: '0',
           strategy: strategyParams.type,
@@ -416,7 +451,8 @@ const BotControl = ({ strategyParams }) => {
           <button 
             onClick={startBot}
             className="bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-4 rounded"
-            disabled={!isWalletConnected || isProcessingTrade}
+            // Use connected from useWallet
+            disabled={!isWalletConnected || !publicKey || isProcessingTrade} 
           >
             {isProcessingTrade ? 'Processing...' : 'Start Trading'}
           </button>

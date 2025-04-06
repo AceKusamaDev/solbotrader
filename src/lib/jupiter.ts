@@ -1,7 +1,8 @@
 'use client';
 
-import { Connection, PublicKey, Transaction, VersionedTransaction } from '@solana/web3.js';
-import { useState, useEffect } from 'react';
+import { Connection, PublicKey, Transaction, VersionedTransaction, SendTransactionError } from '@solana/web3.js';
+import { WalletContextState } from '@solana/wallet-adapter-react'; // Import WalletContextState
+import { useState, useEffect, useCallback } from 'react'; // Added useCallback
 
 // Constants for Jupiter API
 const JUPITER_QUOTE_API = 'https://quote-api.jup.ag/v6/quote';
@@ -96,8 +97,12 @@ export const prepareJupiterSwapTransaction = async (params: SwapParams) => {
 };
 
 // Execute swap transaction
-// Renamed parameter from swapTransaction to swapResponseData for clarity
-export const executeJupiterSwap = async (swapResponseData: any, wallet: any, connection: Connection) => { 
+// Accepts sendTransaction function directly
+export const executeJupiterSwap = async (
+  swapResponseData: any, 
+  sendTransaction: WalletContextState['sendTransaction'], // Use WalletContextState type
+  connection: Connection
+) => { 
   try {
     let transaction;
     const base64Transaction = swapResponseData.swapTransaction; // Get the base64 string directly
@@ -113,12 +118,18 @@ export const executeJupiterSwap = async (swapResponseData: any, wallet: any, con
       throw new Error('Invalid transaction format received from Jupiter API');
     }
 
-    // Sign and send transaction
+    // Send transaction using the provided function
     let signature;
     try {
-      signature = await wallet.sendTransaction(transaction, connection);
+      // The wallet adapter's sendTransaction handles signing
+      signature = await sendTransaction(transaction, connection); 
       console.log('Transaction sent, signature:', signature);
     } catch (signError) {
+      // Catch potential SendTransactionError for more details
+      if (signError instanceof SendTransactionError) {
+        console.error('SendTransactionError:', signError.message);
+        console.error('Logs:', signError.logs);
+      }
       console.error('Error signing/sending transaction:', signError);
       throw signError; // Re-throw the specific error
     }
@@ -147,78 +158,32 @@ export const executeJupiterSwap = async (swapResponseData: any, wallet: any, con
   }
 };
 
-// Hook for trading functionality
+// Hook exposing the trading function (no longer manages wallet state directly)
 const useJupiterTrading = () => {
-  const [isWalletConnected, setIsWalletConnected] = useState(false);
-  const [walletPublicKey, setWalletPublicKey] = useState<string | null>(null);
-  const [wallet, setWallet] = useState<any>(null);
-  
-  // Check if wallet is connected
-  useEffect(() => {
-    const checkWalletConnection = async () => {
-      if (typeof window !== 'undefined' && window.phantom?.solana) {
-        try {
-          // Attempt to connect silently if already trusted by the user
-          const response = await window.phantom.solana.connect({ onlyIfTrusted: true });
-          // If connect succeeds, the wallet is connected and trusted
-          setWalletPublicKey(response.publicKey.toString());
-          setIsWalletConnected(true);
-          setWallet(window.phantom.solana);
-        } catch (error) {
-          // Handle error (e.g., wallet not connected or user rejected connection)
-          // We can log this, but essentially means the wallet isn't connected for our purposes here.
-          console.error('Error checking wallet connection:', error);
-        }
-      }
-    };
-    
-    checkWalletConnection();
-    
-    // Set up event listener for wallet connection changes
-    const handleWalletConnectionChange = () => {
-      checkWalletConnection();
-    };
-    
-    if (typeof window !== 'undefined') {
-      window.addEventListener('phxAccountChanged', handleWalletConnectionChange);
-      window.addEventListener('phxDisconnected', () => {
-        setIsWalletConnected(false);
-        setWalletPublicKey(null);
-        setWallet(null);
-      });
-      window.addEventListener('phxConnected', () => {
-        checkWalletConnection();
-      });
-      
-      return () => {
-        window.removeEventListener('phxAccountChanged', handleWalletConnectionChange);
-        window.removeEventListener('phxDisconnected', () => {
-          setIsWalletConnected(false);
-          setWalletPublicKey(null);
-          setWallet(null);
-        });
-        window.removeEventListener('phxConnected', checkWalletConnection);
-      };
-    }
-  }, []);
-  
-  // Execute trade with strategy
-  const executeTradeWithStrategy = async (
+
+  // Execute trade with strategy - now requires wallet context
+  // Use useCallback to memoize the function
+  const executeTradeWithStrategy = useCallback(async ( 
     inputToken: string,
     outputToken: string,
     amount: string,
     slippage: number,
-    strategy: string
+    strategy: string,
+    // Required parameters from useWallet hook
+    publicKey: PublicKey | null, 
+    sendTransaction: WalletContextState['sendTransaction'],
+    userPublicKeyString: string | null // Added userPublicKey as string
   ) => {
-    if (!isWalletConnected || !walletPublicKey || !wallet) {
+    // Check for publicKey (as PublicKey object) and userPublicKeyString (as string)
+    if (!publicKey || !userPublicKeyString || !sendTransaction) { 
       return {
         success: false,
-        error: 'Wallet not connected',
+        error: 'Wallet not connected or sendTransaction not available',
       };
     }
     
     try {
-      // Create connection to Solana
+      // Create connection to Solana - Consider making RPC endpoint configurable via hook params or context
       const connection = new Connection(
         process.env.NEXT_PUBLIC_RPC_ENDPOINT || 'https://api.mainnet-beta.solana.com', 
         'confirmed'
@@ -238,18 +203,18 @@ const useJupiterTrading = () => {
       
       console.log('Quote received:', quoteResponse);
       
-      // Prepare swap transaction
+      // Prepare swap transaction - use the passed userPublicKeyString
       console.log('Preparing swap transaction...');
       const swapResponse = await prepareJupiterSwapTransaction({
         quoteResponse,
-        userPublicKey: walletPublicKey,
+        userPublicKey: userPublicKeyString, // Use the string version here
       });
       
       console.log('Swap transaction prepared:', swapResponse);
       
-      // Execute swap
+      // Execute swap - pass sendTransaction function
       console.log('Executing swap...');
-      const result = await executeJupiterSwap(swapResponse, wallet, connection);
+      const result = await executeJupiterSwap(swapResponse, sendTransaction, connection);
       
       console.log('Swap executed:', result);
       
@@ -269,12 +234,12 @@ const useJupiterTrading = () => {
         error: error instanceof Error ? error.message : JSON.stringify(error),
       };
     }
-  };
+  // Dependency array for useCallback is empty as it doesn't depend on props/state of this hook
+  }, []); 
   
   return {
-    executeTradeWithStrategy,
-    isWalletConnected,
-    walletPublicKey,
+    executeTradeWithStrategy, // Return the memoized function
+    // Removed wallet state management from this hook
   };
 };
 
