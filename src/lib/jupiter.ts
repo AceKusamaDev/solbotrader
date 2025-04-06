@@ -135,12 +135,25 @@ export const executeJupiterSwap = async (
       throw signError; // Re-throw the specific error
     }
 
-    // Wait for confirmation
+    // Wait for confirmation with increased timeout and strategy
     let confirmation;
     try {
-      console.log(`Waiting for confirmation for signature: ${signature}`); // Log before confirming
-      confirmation = await connection.confirmTransaction(signature, 'confirmed');
-      console.log('Transaction confirmed successfully:', confirmation); // Log after successful confirmation
+      console.log(`Waiting for confirmation for signature: ${signature}`); 
+      // Get the latest blockhash for confirmation strategy
+      const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash('confirmed'); 
+      confirmation = await connection.confirmTransaction({
+        signature, // Keep only one signature property
+        blockhash, // Use the latest blockhash
+        lastValidBlockHeight // Use the associated block height
+      }, 'confirmed'); // Pass commitment as the second argument
+
+      // Check for confirmation error within the response value
+      if (confirmation.value.err) { 
+        console.error('Transaction confirmation failed:', confirmation.value.err);
+        throw new Error(`Transaction confirmation failed: ${JSON.stringify(confirmation.value.err)}`);
+      }
+
+      console.log('Transaction confirmed successfully:', confirmation); 
     } catch (confirmError) {
       console.error(`Error confirming transaction ${signature}:`, confirmError); // Log the specific error here
       // Optionally, you might want to handle confirmation errors differently
