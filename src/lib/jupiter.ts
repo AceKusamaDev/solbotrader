@@ -96,23 +96,23 @@ export const prepareJupiterSwapTransaction = async (params: SwapParams) => {
 };
 
 // Execute swap transaction
-export const executeJupiterSwap = async (swapTransaction: any, wallet: any, connection: Connection) => {
+// Renamed parameter from swapTransaction to swapResponseData for clarity
+export const executeJupiterSwap = async (swapResponseData: any, wallet: any, connection: Connection) => { 
   try {
     let transaction;
-    
-    // Handle different transaction formats
-    if (swapTransaction.versionedTransaction) {
-      // Handle versioned transaction
-      const serializedTransaction = Buffer.from(swapTransaction.versionedTransaction, 'base64');
+    const base64Transaction = swapResponseData.swapTransaction; // Get the base64 string directly
+
+    // Check if the base64 string exists
+    if (base64Transaction && typeof base64Transaction === 'string') {
+      // Deserialize the VersionedTransaction
+      const serializedTransaction = Buffer.from(base64Transaction, 'base64');
       transaction = VersionedTransaction.deserialize(serializedTransaction);
-    } else if (swapTransaction.transaction) {
-      // Handle legacy transaction
-      const serializedTransaction = Buffer.from(swapTransaction.transaction, 'base64');
-      transaction = Transaction.from(serializedTransaction);
     } else {
-      throw new Error('Invalid transaction format received from Jupiter');
+      // Log the unexpected structure and throw error
+      console.error('Unexpected swap response structure or missing swapTransaction field:', swapResponseData);
+      throw new Error('Invalid transaction format received from Jupiter API');
     }
-    
+
     // Sign and send transaction
     let signature;
     try {
