@@ -121,26 +121,28 @@ export const executeJupiterSwap = async (
     // Send transaction using the provided function
     let signature;
     try {
+      console.log('Attempting to send transaction via wallet adapter...'); // Log before sending
       // The wallet adapter's sendTransaction handles signing
       signature = await sendTransaction(transaction, connection); 
-      console.log('Transaction sent, signature:', signature);
+      console.log('Transaction sent successfully, signature:', signature); // Log after successful send
     } catch (signError) {
       // Catch potential SendTransactionError for more details
       if (signError instanceof SendTransactionError) {
         console.error('SendTransactionError:', signError.message);
         console.error('Logs:', signError.logs);
       }
-      console.error('Error signing/sending transaction:', signError);
+      console.error('Full error object during signing/sending transaction:', signError); // Log the full error
       throw signError; // Re-throw the specific error
     }
 
     // Wait for confirmation
     let confirmation;
     try {
+      console.log(`Waiting for confirmation for signature: ${signature}`); // Log before confirming
       confirmation = await connection.confirmTransaction(signature, 'confirmed');
-      console.log('Transaction confirmed:', confirmation);
+      console.log('Transaction confirmed successfully:', confirmation); // Log after successful confirmation
     } catch (confirmError) {
-      console.error('Error confirming transaction:', confirmError);
+      console.error(`Error confirming transaction ${signature}:`, confirmError); // Log the specific error here
       // Optionally, you might want to handle confirmation errors differently
       // For now, we'll re-throw
       throw confirmError;
