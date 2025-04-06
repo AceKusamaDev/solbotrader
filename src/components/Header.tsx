@@ -1,6 +1,6 @@
 'use client';
 
-import React from 'react';
+import React, { useState, useEffect } from 'react'; // Import useState, useEffect
 import { useWallet } from '@solana/wallet-adapter-react';
 import dynamic from 'next/dynamic';
 
@@ -12,7 +12,13 @@ const WalletMultiButton = dynamic(
 
 // Header component using Wallet Adapter context and UI components
 const Header = () => {
-  const { connected, publicKey } = useWallet(); // Get state from adapter context
+  const { connected } = useWallet(); // Get state from adapter context
+  const [isMounted, setIsMounted] = useState(false); // State to track client mount
+
+  useEffect(() => {
+    // Set mounted state to true only on the client side after initial render
+    setIsMounted(true); 
+  }, []);
 
   // Note: Balance fetching is removed for simplicity, 
   // it can be added back using the adapter's connection if needed.
@@ -29,9 +35,11 @@ const Header = () => {
       </div>
       
       <div className="flex items-center">
-        {/* Render the WalletMultiButton component */}
-        {/* It handles connect/disconnect logic and displays wallet info */}
-        <WalletMultiButton style={{ height: '40px', fontSize: '14px' }} /> 
+        {/* Render the WalletMultiButton component only after mounting on client */}
+        {/* This prevents potential SSR/hydration issues */}
+        {isMounted && (
+          <WalletMultiButton style={{ height: '40px', fontSize: '14px' }} /> 
+        )}
       </div>
     </header>
   );
