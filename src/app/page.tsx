@@ -36,7 +36,8 @@ export default function Home() {
 
   return (
     <div className="flex flex-col space-y-8">
-      {!connected && (
+      {/* Use connected status from useWallet for the top banner */}
+      {!connected && ( 
         <div className="fixed top-0 left-0 right-0 z-50 p-4 bg-blue-600">
           <div className="container mx-auto flex items-center justify-between">
             <div className="flex items-center">
@@ -54,7 +55,8 @@ export default function Home() {
       <div className="pt-16">
         <h1 className="text-3xl font-bold">SolBotX AI Trading Bot</h1>
 
-        {!connected ? (
+        {/* Use connected status from useWallet for conditional rendering */}
+        {!connected ? ( 
           <div className="bg-gray-800 p-8 rounded-lg text-center mt-8">
             <h2 className="text-2xl font-bold mb-4">Connect Your Wallet</h2>
             <p className="text-gray-400 mb-6">
