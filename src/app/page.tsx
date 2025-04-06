@@ -1,6 +1,7 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState } from 'react'; // Removed useEffect
+import { useWallet } from '@solana/wallet-adapter-react'; // Import useWallet
 import dynamic from 'next/dynamic';
 import StrategyConfig from '@/components/StrategyConfig';
 import TradingChart from '@/components/TradingChart';
@@ -11,7 +12,8 @@ import { StrategyParams } from '@/components/BotControl';
 const BotControl = dynamic(() => import('@/components/BotControl'), { ssr: false });
 
 export default function Home() {
-  const [connected, setConnected] = useState(false);
+  // Get connection status from useWallet
+  const { connected } = useWallet(); 
   const [currentSymbol] = useState('SOLUSD');
   const [strategyParams, setStrategyParams] = useState<StrategyParams>({
     type: 'Multi-indicator',
@@ -25,94 +27,8 @@ export default function Home() {
     action: 'buy'
   });
 
-  useEffect(() => {
-    const checkWalletConnection = () => {
-      if (typeof window !== 'undefined') {
-        const phantom = window.phantom?.solana;
-        const solana = window.solana;
-
-        try {
-          const isPhantomConnected = phantom?.isConnected ?? false;
-          const isSolanaConnected = solana?.isConnected ?? false;
-
-          if (isPhantomConnected || isSolanaConnected) {
-            setConnected(true);
-            localStorage.setItem('walletConnected', 'true');
-          } else {
-            setConnected(false);
-            localStorage.setItem('walletConnected', 'false');
-          }
-        } catch (error) {
-          console.error('Error checking wallet connection:', error);
-        }
-      }
-    };
-
-    // Restore from localStorage
-    const saved = localStorage.getItem('walletConnected');
-    if (saved === 'true') {
-      setConnected(true);
-    }
-
-    checkWalletConnection();
-
-    // === Named event handlers ===
-    const handlePhantomConnected = () => {
-      console.log('Phantom connected event');
-      setConnected(true);
-      localStorage.setItem('walletConnected', 'true');
-    };
-
-    const handlePhantomDisconnected = () => {
-      console.log('Phantom disconnected event');
-      setConnected(false);
-      localStorage.setItem('walletConnected', 'false');
-    };
-
-    const handleAccountChange = () => {
-      console.log('Wallet account changed');
-      checkWalletConnection();
-    };
-
-    if (typeof window !== 'undefined') {
-      window.addEventListener('phxConnected', handlePhantomConnected);
-      window.addEventListener('phxDisconnected', handlePhantomDisconnected);
-      window.addEventListener('phxAccountChanged', handleAccountChange);
-
-      const intervalId = setInterval(checkWalletConnection, 5000); // Every 5 seconds
-
-      return () => {
-        clearInterval(intervalId);
-        window.removeEventListener('phxConnected', handlePhantomConnected);
-        window.removeEventListener('phxDisconnected', handlePhantomDisconnected);
-        window.removeEventListener('phxAccountChanged', handleAccountChange);
-      };
-    }
-  }, []);
-
-  const manualConnect = async () => {
-    try {
-      if (typeof window !== 'undefined') {
-        const phantom = window.phantom?.solana;
-        const solana = window.solana;
-
-        if (phantom) {
-          await phantom.connect();
-          setConnected(true);
-          localStorage.setItem('walletConnected', 'true');
-        } else if (solana) {
-          await solana.connect();
-          setConnected(true);
-          localStorage.setItem('walletConnected', 'true');
-        } else {
-          alert('No Solana wallet found. Please install Phantom.');
-        }
-      }
-    } catch (error) {
-      console.error('Manual wallet connect error:', error);
-      alert('Failed to connect. Try again.');
-    }
-  };
+  // Removed useEffect for manual connection checking
+  // Removed manualConnect function
 
   const handleStrategyUpdate = (newParams: StrategyParams) => {
     setStrategyParams(newParams);
@@ -145,14 +61,9 @@ export default function Home() {
               Please connect your Phantom wallet to start using the SolBotX trading bot.
             </p>
             <p className="text-gray-400 mb-6">
-              Click the Connect Wallet button in the top right corner.
+              Click the Connect Wallet button in the top right corner (provided by the Header component).
             </p>
-            <button
-              onClick={manualConnect}
-              className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded"
-            >
-              Connect Wallet Manually
-            </button>
+            {/* Removed manual connect button */}
           </div>
         ) : (
           <>
@@ -179,25 +90,12 @@ export default function Home() {
           </>
         )}
       </div>
+      {/* CoinGecko Attribution Footer */}
+      <footer className="text-center text-xs text-gray-500 mt-8 py-4 border-t border-gray-700">
+        Price data provided by <a href="https://www.coingecko.com/" target="_blank" rel="noopener noreferrer" className="underline hover:text-gray-400">CoinGecko</a>
+      </footer>
     </div>
   );
 }
 
-// Global declarations
-declare global {
-  interface Window {
-    phantom?: {
-      solana?: {
-        isPhantom?: boolean;
-        isConnected?: boolean;
-        connect: () => Promise<{ publicKey: { toString: () => string } }>;
-        disconnect: () => Promise<void>;
-      };
-    };
-    solana?: {
-      isConnected?: boolean;
-      connect: () => Promise<any>;
-      disconnect: () => Promise<void>;
-    };
-  }
-}
+// Removed conflicting global declarations as wallet adapter handles types

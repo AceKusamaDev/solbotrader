@@ -31,11 +31,14 @@ export const getJupiterQuote = async (params: QuoteParams) => {
   try {
     const { inputMint, outputMint, amount, slippageBps } = params;
     
+    // Request dynamic compute unit price for priority fees
     const queryParams = new URLSearchParams({
       inputMint,
       outputMint,
       amount,
       slippageBps: slippageBps.toString(),
+      computeUnitPriceMicroLamports: 'auto', // Request dynamic fees
+      // asLegacyTransaction: 'false', // Ensure VersionedTransaction is returned (default is false)
     });
     
     const response = await fetch(`${JUPITER_QUOTE_API}?${queryParams.toString()}`);
@@ -73,6 +76,9 @@ export const prepareJupiterSwapTransaction = async (params: SwapParams) => {
       body: JSON.stringify({
         quoteResponse,
         userPublicKey,
+        // Pass dynamic priority fee info if available in quoteResponse
+        computeUnitPriceMicroLamports: quoteResponse.computeUnitPriceMicroLamports ?? undefined, 
+        // asLegacyTransaction: false, // Ensure VersionedTransaction is returned
       }),
     });
 
