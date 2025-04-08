@@ -13,7 +13,7 @@ import {
 } from 'recharts';
 // Remove unused Jupiter hook import if wallet info isn't needed directly here
 // import useJupiterTrading from '@/lib/jupiter';
-import { useWallet } from '@solana/wallet-adapter-react'; // Import useWallet
+import { useConnection, useWallet } from '@solana/wallet-adapter-react'; // Import useConnection and useWallet
 // Import Zustand store and types
 import useBotStore, { Trade } from '@/store/useBotStore';
 import { Position } from '@/lib/safetyFeatures'; // Import Position type
@@ -65,8 +65,9 @@ export default function PerformanceDashboard() {
     status: state.status,
   }));
 
-  // Get wallet info directly using useWallet hook
+  // Get wallet info and connection directly using hooks
   const { publicKey: walletPublicKey, connected: isWalletConnected } = useWallet();
+  const { connection } = useConnection(); // Get the configured connection object
 
   // Local state for UI and derived data
   const [activeTab, setActiveTab] = useState<'livePnL' | 'openPositions' | 'recentTrades' | 'account'>('livePnL');
@@ -127,26 +128,15 @@ export default function PerformanceDashboard() {
     */
   }, [tradeHistory, pnlData]); // Depend on store's tradeHistory and local pnlData structure
 
-  // Fetch wallet balance (keep as is for now) - Removed duplicated PnL logic from here
+  // Fetch wallet balance using the connection from the wallet adapter context
   useEffect(() => {
     const fetchWalletBalance = async () => {
-      if (isWalletConnected && walletPublicKey) {
+      // Use connection object from useConnection hook
+      if (isWalletConnected && walletPublicKey && connection) {
         try {
-          const response = await fetch(`https://api.mainnet-beta.solana.com`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              "jsonrpc": "2.0",
-              "id": 1,
-              "method": "getBalance",
-              "params": [walletPublicKey]
-            })
-          });
-          
-          const data = await response.json();
-          if (data.result?.value) {
-            setWalletBalance(data.result.value / 1000000000); // Convert lamports to SOL
-          }
+          // Use connection.getBalance method
+          const balanceLamports = await connection.getBalance(walletPublicKey);
+          setWalletBalance(balanceLamports / 1000000000); // Convert lamports to SOL
         } catch (error) {
           console.error('Error fetching wallet balance:', error);
           setError('Failed to fetch wallet balance');

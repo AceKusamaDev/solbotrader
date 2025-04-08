@@ -118,7 +118,10 @@ const BotControl = () => {
         setIsProcessingTrade(false);
       }
     };
-    runInitialAnalysis();
+    // Only run analysis when status explicitly becomes 'analyzing'
+    if (status === 'analyzing') {
+        runInitialAnalysis();
+    }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [status, pair]); // Rerun analysis if status becomes 'analyzing' or pair changes
 
@@ -137,12 +140,12 @@ const BotControl = () => {
         setIsProcessingTrade(true); // Lock for this iteration
 
         // --- Check SL/TP First ---
+        // Read activePositions directly inside the loop to get the latest state
+        const currentActivePositions = useBotStore.getState().activePositions;
         let positionClosed = false;
-        if (activePositions.length > 0) {
+        if (currentActivePositions.length > 0) {
             positionClosed = await checkPositionsSLTP(); // Check returns true if a position was closed
-            // If SL/TP closed the position, activePositions in store is updated
-            // We need to get the latest state *after* the check
-             if (useBotStore.getState().activePositions.length === 0 && activePositions.length > 0) {
+             if (useBotStore.getState().activePositions.length === 0 && currentActivePositions.length > 0) { // Check if SL/TP closed the position
                  console.log("Position closed by SL/TP.");
                  // TODO: Handle run count incrementing here?
                  setIsProcessingTrade(false);
@@ -197,8 +200,9 @@ const BotControl = () => {
       tradingIntervalRef.current = null;
       console.log("Trading loop stopped.");
     }
-    // Dependencies
-  }, [status, isTestMode, runIntervalMinutes, currentPoolAddress, analysisResult, activePositions.length, pair, action, strategyType, amount]); // Add relevant dependencies
+    // Dependencies: Trigger loop start/stop based on status, pool address, and analysis result.
+    // Other settings like isTestMode and runIntervalMinutes are read inside the loop.
+  }, [status, currentPoolAddress, analysisResult, runIntervalMinutes, isTestMode, pair, action, strategyType, amount]); // Removed activePositions.length
 
 
   // --- Event Handlers ---

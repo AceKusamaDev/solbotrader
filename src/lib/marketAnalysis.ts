@@ -153,37 +153,55 @@ export const assessMarketStructure = async (poolAddress: string): Promise<Analys
   // This is where the core logic from Task 1c goes.
   // Analyze trends, S/R, indicator confirmations across timeframes.
 
-  let determinedCondition: MarketCondition = 'Unclear';
+  // Remove duplicate declaration
+  // let determinedCondition: MarketCondition = 'Unclear';
 
-  // Example Placeholder Logic:
-  // 1. Check Daily Trend (e.g., using EMAs)
-  const dailyTrendUp = dailyIndicators.latestEmaShort && dailyIndicators.latestEmaLong && dailyIndicators.latestEmaShort > dailyIndicators.latestEmaLong;
-  const dailyTrendDown = dailyIndicators.latestEmaShort && dailyIndicators.latestEmaLong && dailyIndicators.latestEmaShort < dailyIndicators.latestEmaLong;
+  // --- Market Condition Logic ---
+  // Refined logic based on multi-timeframe analysis principles
 
-  // 2. Check Hourly Confirmation (e.g., RSI > 50 for uptrend)
-  const hourlyConfirmUp = hourlyIndicators.latestRsi && hourlyIndicators.latestRsi > 55;
-  const hourlyConfirmDown = hourlyIndicators.latestRsi && hourlyIndicators.latestRsi < 45;
+  let determinedCondition: MarketCondition = 'Unclear'; // Default to Unclear
 
-  // 3. Check for Ranging (e.g., Bollinger Bands relatively narrow on hourly/daily?)
-  //    This requires more complex logic (e.g., band width calculation)
+  // --- Trend Analysis (Daily & Hourly) ---
+  const dailyEmaShort = dailyIndicators.latestEmaShort;
+  const dailyEmaLong = dailyIndicators.latestEmaLong;
+  const hourlyEmaShort = hourlyIndicators.latestEmaShort; // Calculate hourly EMAs if needed, or use daily as primary trend
+  const hourlyEmaLong = hourlyIndicators.latestEmaLong;
+  const hourlyRsi = hourlyIndicators.latestRsi;
 
-  if (dailyTrendUp && hourlyConfirmUp) {
-      determinedCondition = 'Uptrend';
-  } else if (dailyTrendDown && hourlyConfirmDown) {
-      // We don't have a downtrend strategy yet, but could identify it
-      determinedCondition = 'Unclear'; // Or 'Downtrend' if needed later
-  } else {
-      // Add ranging detection logic here
-      // If not clearly trending, assume ranging or unclear for now
-      // Example: Check if price is oscillating between BBands on hourly
-      const hourlyPrice = hourly[hourly.length - 1].close;
-      const hourlyBbands = hourlyIndicators.latestBbands;
-      if (hourlyBbands && hourlyPrice < hourlyBbands.upper && hourlyPrice > hourlyBbands.lower) {
-          // Potentially ranging, but needs more confirmation (e.g., RSI near 50)
-          if (hourlyIndicators.latestRsi && hourlyIndicators.latestRsi > 40 && hourlyIndicators.latestRsi < 60) {
-              determinedCondition = 'Ranging';
-          }
+  const isDailyTrendingUp = dailyEmaShort && dailyEmaLong && dailyEmaShort > dailyEmaLong;
+  const isDailyTrendingDown = dailyEmaShort && dailyEmaLong && dailyEmaShort < dailyEmaLong;
+  // Optional: Add hourly EMA confirmation
+  const isHourlyTrendingUp = hourlyEmaShort && hourlyEmaLong && hourlyEmaShort > hourlyEmaLong;
+
+  // --- Ranging Analysis (Hourly Bollinger Bands & RSI) ---
+  const hourlyBbands = hourlyIndicators.latestBbands;
+  let isHourlyRanging = false;
+  if (hourlyBbands && hourlyRsi) {
+      const bandWidth = (hourlyBbands.upper - hourlyBbands.lower) / hourlyBbands.middle;
+      // Example: Consider it ranging if BB width is below a threshold (e.g., 0.1 or 10%)
+      // and RSI is oscillating around 50 (e.g., between 40-60)
+      if (bandWidth < 0.1 && hourlyRsi > 40 && hourlyRsi < 60) {
+          isHourlyRanging = true;
       }
+      // Alternative ranging check: Price crossing the middle band frequently, low volatility. Needs more data points.
+  }
+
+  // --- Determine Condition ---
+  if (isDailyTrendingUp) {
+      // Primary trend is up. Check hourly confirmation.
+      if (hourlyRsi && hourlyRsi > 50) { // Confirming with RSI > 50
+          determinedCondition = 'Uptrend';
+      } else {
+          // Daily trend up, but hourly confirmation weak. Could be pullback or weakening trend.
+          determinedCondition = 'Unclear'; // Treat as unclear for now
+      }
+  } else if (isHourlyRanging) {
+      // If not clearly trending up, check if it's ranging based on hourly BBands/RSI
+      determinedCondition = 'Ranging';
+  } else {
+      // Default to Unclear if neither strong uptrend nor clear ranging is detected.
+      // Could add specific 'Downtrend' logic here if needed later.
+      determinedCondition = 'Unclear';
   }
 
   console.log(`Determined Market Condition: ${determinedCondition}`);

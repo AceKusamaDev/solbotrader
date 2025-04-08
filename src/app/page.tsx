@@ -70,7 +70,11 @@ export default function Home() {
                 </div>
               </div>
               <div className="lg:col-span-2">
-                <TradingChart symbol={currentSymbol} />
+                {/* Temporarily comment out TradingChart due to CoinGecko API issues */}
+                {/* <TradingChart symbol={currentSymbol} /> */}
+                <div className="bg-gray-800 p-6 rounded-lg shadow-lg h-96 flex items-center justify-center text-gray-500">
+                  Trading Chart Placeholder
+                </div>
               </div>
             </div>
 
