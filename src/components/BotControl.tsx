@@ -89,6 +89,13 @@ const BotControl = () => {
   // Get Jupiter trading function
   const { executeTradeWithStrategy } = useJupiterTrading();
 
+  // Ref to track mount status - Moved up
+  const isMountedRef = useRef(true);
+  useEffect(() => {
+      isMountedRef.current = true;
+      return () => { isMountedRef.current = false; }; // Set to false on unmount
+  }, []);
+
 
   // --- Core Logic Functions ---
 
@@ -153,7 +160,7 @@ const BotControl = () => {
           removePosition(position.id);
         } else { setError(`Stop loss trade failed: ${result.error}`); }
       } catch (error: any) { setError(`Error executing stop loss: ${error.message}`); }
-      finally { if (isMountedRef.current) setIsProcessingTrade(false); } // Check mount status
+      finally { if (isMountedRef.current) setIsProcessingTrade(false); } // Check mount status - isMountedRef is now declared above
     } else {
       const exitAction = position.action === 'buy' ? 'sell' : 'buy';
       const exitTrade: Trade = {
@@ -199,7 +206,7 @@ const BotControl = () => {
           removePosition(position.id);
         } else { setError(`Take profit trade failed: ${result.error}`); }
       } catch (error: any) { setError(`Error executing take profit: ${error.message}`); }
-      finally { if (isMountedRef.current) setIsProcessingTrade(false); }
+      finally { if (isMountedRef.current) setIsProcessingTrade(false); } // Check mount status - isMountedRef is now declared above
     } else {
       const exitAction = position.action === 'buy' ? 'sell' : 'buy';
       const exitTrade: Trade = {
@@ -212,7 +219,7 @@ const BotControl = () => {
       removePosition(position.id);
     }
     return true; // TP triggered
-  }, [publicKey, sendTransaction, executeTradeWithStrategy, addTradeHistory, removePosition, setError]); // Add dependencies
+  }, [publicKey, sendTransaction, executeTradeWithStrategy, addTradeHistory, removePosition, setError, isMountedRef]); // Add dependencies, including isMountedRef
 
    // Check Stop Loss and Take Profit for all active positions
    const checkPositionsSLTP = useCallback(async (): Promise<boolean> => {
@@ -298,14 +305,14 @@ const BotControl = () => {
               addTradeHistory(failedTrade);
           }
       } catch (e: any) { setError(`Trade execution error: ${e.message}`); }
-      finally { if (isMountedRef.current) setIsProcessingTrade(false); }
-  }, [currentPoolAddress, executeTradeWithStrategy, publicKey, sendTransaction, addTradeHistory, addPosition, setError]); // Dependencies
+      finally { if (isMountedRef.current) setIsProcessingTrade(false); } // Check mount status - isMountedRef is now declared above
+  }, [currentPoolAddress, executeTradeWithStrategy, publicKey, sendTransaction, addTradeHistory, addPosition, setError, isProcessingTrade, isMountedRef]); // Dependencies
+
 
   // --- Combined Bot Lifecycle Effect ---
-  const isMountedRef = useRef(true); // Ref to track mount status
 
   useEffect(() => {
-    isMountedRef.current = true;
+    // isMountedRef setup is now done in its own effect above
     let analysisRunning = false; // Local flag to prevent concurrent analysis runs
 
     // Function to perform the core trading loop logic
@@ -380,13 +387,13 @@ const BotControl = () => {
         const runInitialAnalysis = async () => {
             if (!isMountedRef.current) return;
             console.log("Starting initial market analysis...");
-            setIsProcessingTrade(true);
+            setIsProcessingTrade(true); // Use local state for processing flag
             const poolAddress = await findPoolAddress(pair);
             if (!isMountedRef.current) { analysisRunning = false; return; }
 
             if (!poolAddress) {
                 setError(`Could not find pool address for pair: ${pair}`);
-                storeStopBot();
+                storeStopBot(); // Stop via store action
                 if (isMountedRef.current) setIsProcessingTrade(false);
                 analysisRunning = false;
                 return;
@@ -396,31 +403,35 @@ const BotControl = () => {
             const result = await assessMarketStructure(poolAddress);
             if (!isMountedRef.current) { analysisRunning = false; return; }
 
+            // --- MODIFICATION START ---
+            // Set results but DO NOT transition to 'running' here
             setAnalysisResult(result);
             setMarketCondition(result.condition);
 
             if (result.condition === 'Unclear') {
                 console.log("Market condition unclear, bot will not start.");
                 setError("Market condition unclear. Bot stopped.");
-                storeStopBot();
+                storeStopBot(); // Stop via store action
             } else {
-                console.log(`Initial analysis complete. Market Condition: ${result.condition}. Starting trading loop.`);
-                if (isMountedRef.current) {
-                     useBotStore.setState({ status: 'running' }); // Trigger the 'running' state
-                }
+                 console.log(`Initial analysis complete. Market Condition: ${result.condition}. Ready to run.`);
+                 // Let the next effect handle the transition based on analysisResult
             }
+            // --- MODIFICATION END ---
+
             if (isMountedRef.current) setIsProcessingTrade(false);
             analysisRunning = false;
         };
         runInitialAnalysis();
 
     } else if (status === 'running') {
-        if (!tradingIntervalRef.current && currentPoolAddress && analysisResult) {
+        // Setup interval ONLY if poolAddress and analysisResult are available
+        if (!tradingIntervalRef.current && currentPoolAddress && analysisResult && analysisResult.condition !== 'Unclear') {
             console.log(`Setting up trading loop interval: ${settings.runIntervalMinutes} mins.`);
-            // Run first loop logic slightly delayed to allow state to settle?
-            // setTimeout(loopLogic, 100); // Optional small delay
             loopLogic(); // Run first iteration
             tradingIntervalRef.current = setInterval(loopLogic, settings.runIntervalMinutes * 60 * 1000);
+        } else if (!currentPoolAddress || !analysisResult || analysisResult.condition === 'Unclear') {
+             console.warn("Cannot start trading loop: Missing pool address or valid analysis result.");
+             storeStopBot(); // Stop if prerequisites aren't met
         }
     } else if (status === 'stopped') {
         if (tradingIntervalRef.current) {
@@ -439,8 +450,19 @@ const BotControl = () => {
             console.log("Cleaning up trading loop interval.");
         }
     };
-  // Only depend on status and pair to trigger analysis or setup/teardown interval
-  }, [status, pair]);
+  // Depend on status, pair, currentPoolAddress, analysisResult to ensure loop setup has prerequisites
+  // Also include functions called within the effect if they rely on props/state or aren't stable references
+  // REMOVED loopLogic from dependencies as it's defined inside
+  }, [status, pair, currentPoolAddress, analysisResult, settings.runIntervalMinutes, storeStopBot, setMarketCondition, setError, checkPositionsSLTP, simulateTradeAction, executeRealTradeAction, isProcessingTrade]); // Added dependencies
+
+
+  // --- NEW Effect to handle transition from Analyzing to Running ---
+  useEffect(() => {
+    if (status === 'analyzing' && analysisResult && analysisResult.condition !== 'Unclear' && currentPoolAddress) {
+        console.log("Analysis complete and valid, transitioning to running state.");
+        useBotStore.setState({ status: 'running' });
+    }
+  }, [status, analysisResult, currentPoolAddress]); // Depends on these states
 
 
   // --- Event Handlers ---
@@ -452,10 +474,11 @@ const BotControl = () => {
     }
     setStopLossTriggeredUI(false);
     setStopLossMessageUI('');
-    setError(null);
+    // setError(undefined); // Remove this - setError likely expects a string
     setAnalysisResult(null);
     setCurrentPoolAddress(null); // Reset pool address on start
-    useBotStore.setState({ status: 'analyzing', errorMessage: null, currentRun: 0 }); // Trigger analysis
+    // Set state including clearing the error message
+    useBotStore.setState({ status: 'analyzing', currentRun: 0, errorMessage: null });
   };
 
   const handleStopBot = () => {
