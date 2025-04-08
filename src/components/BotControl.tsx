@@ -486,8 +486,7 @@ const BotControl = () => {
     };
 // Dependencies: status drives the main logic. pair triggers re-analysis.
 // settings.runIntervalMinutes needed for setInterval. loopLogic is stable.
-// analysisResult and currentPoolAddress are needed to check prerequisites in the 'running' block.
-}, [status, pair, settings.runIntervalMinutes, loopLogic, setError, setMarketCondition, storeStopBot, analysisResult, currentPoolAddress]);
+}, [status, pair, settings.runIntervalMinutes, loopLogic, setError, setMarketCondition, storeStopBot]); // REMOVED analysisResult, currentPoolAddress
 
 
   // --- Event Handlers ---
