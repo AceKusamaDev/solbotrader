@@ -28,7 +28,8 @@ const BotControl = () => {
   const [stopLossTriggeredUI, setStopLossTriggeredUI] = useState(false);
   const [stopLossMessageUI, setStopLossMessageUI] = useState('');
   const tradingIntervalRef = useRef<NodeJS.Timeout | null>(null);
-  const [isProcessingTrade, setIsProcessingTrade] = useState(false); // Local state for disabling buttons during trade
+  const [isProcessingTrade, setIsProcessingTrade] = useState(false); // Local STATE for disabling buttons during trade (UI feedback)
+  const isProcessingRef = useRef(false); // Ref to track actual processing lock (prevents loops)
   const [currentPoolAddress, setCurrentPoolAddress] = useState<string | null>(null); // Cache pool address
   const [analysisResult, setAnalysisResult] = useState<AnalysisResult | null>(null); // Store last analysis
 
@@ -139,8 +140,10 @@ const BotControl = () => {
     setStopLossMessageUI(message);
 
     if (!latestSettings.isTestMode) { // Use latest setting
+      if (isProcessingRef.current) return false; // Prevent concurrent SL/TP checks
       try {
-        setIsProcessingTrade(true);
+        isProcessingRef.current = true; // Set ref lock
+        setIsProcessingTrade(true); // Set state for UI
         const exitAction = position.action === 'buy' ? 'sell' : 'buy';
         const amountInSmallestUnit = (position.amount * Math.pow(10, 9)).toString(); // Assuming 9 decimals
 
@@ -160,8 +163,12 @@ const BotControl = () => {
           removePosition(position.id);
         } else { setError(`Stop loss trade failed: ${result.error}`); }
       } catch (error: any) { setError(`Error executing stop loss: ${error.message}`); }
-      finally { if (isMountedRef.current) setIsProcessingTrade(false); } // Check mount status - isMountedRef is now declared above
+      finally {
+          isProcessingRef.current = false; // Release ref lock
+          if (isMountedRef.current) setIsProcessingTrade(false); // Release state for UI
+      }
     } else {
+      // Simulation doesn't need the lock as it's synchronous
       const exitAction = position.action === 'buy' ? 'sell' : 'buy';
       const exitTrade: Trade = {
         id: `sl-sim-${Date.now()}`, timestamp: new Date().toISOString(), pair: position.pair,
@@ -185,8 +192,10 @@ const BotControl = () => {
     console.log(`TAKE PROFIT TRIGGERED: ${message}`);
 
     if (!latestSettings.isTestMode) {
+      if (isProcessingRef.current) return false; // Prevent concurrent SL/TP checks
       try {
-        setIsProcessingTrade(true);
+        isProcessingRef.current = true; // Set ref lock
+        setIsProcessingTrade(true); // Set state for UI
         const exitAction = position.action === 'buy' ? 'sell' : 'buy';
         const amountInSmallestUnit = (position.amount * Math.pow(10, 9)).toString();
 
@@ -206,8 +215,12 @@ const BotControl = () => {
           removePosition(position.id);
         } else { setError(`Take profit trade failed: ${result.error}`); }
       } catch (error: any) { setError(`Error executing take profit: ${error.message}`); }
-      finally { if (isMountedRef.current) setIsProcessingTrade(false); } // Check mount status - isMountedRef is now declared above
+      finally {
+          isProcessingRef.current = false; // Release ref lock
+          if (isMountedRef.current) setIsProcessingTrade(false); // Release state for UI
+      }
     } else {
+      // Simulation doesn't need the lock
       const exitAction = position.action === 'buy' ? 'sell' : 'buy';
       const exitTrade: Trade = {
         id: `tp-sim-${Date.now()}`, timestamp: new Date().toISOString(), pair: position.pair,
@@ -271,9 +284,10 @@ const BotControl = () => {
       const { amount: currentAmount, pair: currentPair, strategyType: currentStrategy } = useBotStore.getState().settings;
       const poolAddr = currentPoolAddress; // Use state pool address
 
-      if (isProcessingTrade || !poolAddr) return;
+      if (isProcessingRef.current || !poolAddr) return; // Check REF lock
       console.log(`Attempting real ${tradeAction} trade...`);
-      setIsProcessingTrade(true);
+      isProcessingRef.current = true; // Set ref lock
+      setIsProcessingTrade(true); // Set state for UI
       try {
           const inputMint = tradeAction === 'buy' ? USDC_MINT : SOL_MINT;
           const outputMint = tradeAction === 'buy' ? SOL_MINT : USDC_MINT;
@@ -305,103 +319,119 @@ const BotControl = () => {
               addTradeHistory(failedTrade);
           }
       } catch (e: any) { setError(`Trade execution error: ${e.message}`); }
-      finally { if (isMountedRef.current) setIsProcessingTrade(false); } // Check mount status - isMountedRef is now declared above
-  }, [currentPoolAddress, executeTradeWithStrategy, publicKey, sendTransaction, addTradeHistory, addPosition, setError, isProcessingTrade, isMountedRef]); // Dependencies
+      finally {
+          isProcessingRef.current = false; // Release ref lock
+          if (isMountedRef.current) setIsProcessingTrade(false); // Release state for UI
+      }
+  }, [currentPoolAddress, executeTradeWithStrategy, publicKey, sendTransaction, addTradeHistory, addPosition, setError, isMountedRef]); // REMOVED isProcessingTrade from dependencies
 
 
   // --- Combined Bot Lifecycle Effect ---
+
+  // Define loopLogic OUTSIDE the main useEffect so it's a stable reference
+  const loopLogic = useCallback(async () => {
+      if (!isMountedRef.current || useBotStore.getState().status !== 'running') return;
+      if (isProcessingRef.current) { // Check REF lock
+            console.log("Skipping loop iteration: Trade/Analysis in progress (ref lock).");
+            return;
+        }
+        console.log("Trading loop iteration...");
+        isProcessingRef.current = true; // Set ref lock
+        setIsProcessingTrade(true); // Set state for UI
+
+        let shouldEnterTrade = false; // Declare here
+
+        try { // Wrap logic in try block
+            const { settings: currentSettings, activePositions: currentActivePositions } = useBotStore.getState();
+            const { strategyType: currentStrategyType, action: currentAction, isTestMode: currentTestMode } = currentSettings;
+            const currentAnalysis = analysisResult; // Use analysis result from component state
+            const poolAddr = currentPoolAddress; // Use pool address from component state
+
+            if (!poolAddr || !currentAnalysis) {
+                console.error("Missing pool address or analysis result for loop logic.");
+                setError("Internal error: Missing data for trading loop.");
+                storeStopBot();
+                // No need to set processing false here, finally block will handle it
+                return;
+            }
+
+            // --- Check Strategy Exit / SL / TP ---
+            if (currentActivePositions.length > 0) {
+                const positionClosed = await checkPositionsSLTP();
+                // Check if position was closed *during* SL/TP check
+                if (isProcessingRef.current && useBotStore.getState().activePositions.length < currentActivePositions.length) {
+                     console.log("Position closed by SL/TP/Strategy Exit during check.");
+                     // Don't return immediately, let finally block handle cleanup
+                }
+            }
+
+             // Re-check lock and active positions before entry logic
+            if (isProcessingRef.current && useBotStore.getState().activePositions.length === 0) {
+                console.log("No active position. Checking entry conditions...");
+                const fifteenMinData = await fetchGeckoTerminalOhlcv(poolAddr, 'minute', 15, 10);
+                if (fifteenMinData && currentAnalysis) {
+                    if (currentStrategyType === 'TrendTracker') {
+                        shouldEnterTrade = checkTrendTrackerEntry(currentAnalysis, fifteenMinData);
+                    } else if (currentStrategyType === 'SmartRange Scout') {
+                        shouldEnterTrade = checkSmartRangeEntry(currentAnalysis, fifteenMinData);
+                    }
+                } else {
+                    console.warn("Could not fetch recent 15min data or analysis result missing for entry check.");
+                }
+            } else if (isProcessingRef.current) { // Check lock again
+                console.log("Position already active or SL/TP closed it, skipping entry check.");
+            }
+
+            // --- Execute Trade ---
+            if (isProcessingRef.current && shouldEnterTrade) { // Check lock again
+                console.log(`Entry conditions met for ${currentStrategyType}. Attempting trade...`);
+                if (currentTestMode) {
+                    simulateTradeAction(currentAction); // Simulation is synchronous, doesn't need lock management here
+                } else {
+                    await executeRealTradeAction(currentAction); // This handles its own lock
+                }
+            } else if (isProcessingRef.current) { // Check lock again
+                console.log("Entry conditions not met or position already open/closed.");
+            }
+
+        } catch (error: any) {
+             console.error("Error during trading loop logic:", error);
+             setError(`Loop error: ${error.message}`);
+        } finally {
+             isProcessingRef.current = false; // Release ref lock
+             if (isMountedRef.current) setIsProcessingTrade(false); // Release state for UI
+        }
+      // Add dependencies for loopLogic useCallback
+      // Ensure all external variables/functions used inside are listed
+      }, [analysisResult, currentPoolAddress, setError, storeStopBot, checkPositionsSLTP, simulateTradeAction, executeRealTradeAction, settings, isMountedRef]);
+
 
   useEffect(() => {
     // isMountedRef setup is now done in its own effect above
     let analysisRunning = false; // Local flag to prevent concurrent analysis runs
 
-    // Function to perform the core trading loop logic
-    const loopLogic = async () => {
-        if (!isMountedRef.current || useBotStore.getState().status !== 'running') return;
-        if (isProcessingTrade) {
-            console.log("Skipping loop iteration: Trade/Analysis in progress.");
-            return;
-        }
-        console.log("Trading loop iteration...");
-        setIsProcessingTrade(true);
-
-        const { settings: currentSettings, activePositions: currentActivePositions } = useBotStore.getState();
-        const { strategyType: currentStrategyType, action: currentAction, isTestMode: currentTestMode } = currentSettings;
-        const currentAnalysis = analysisResult; // Use analysis result from component state
-        const poolAddr = currentPoolAddress; // Use pool address from component state
-
-        if (!poolAddr || !currentAnalysis) {
-            console.error("Missing pool address or analysis result for loop logic.");
-            setError("Internal error: Missing data for trading loop.");
-            storeStopBot();
-            setIsProcessingTrade(false);
-            return;
-        }
-
-        // --- Check Strategy Exit / SL / TP ---
-        if (currentActivePositions.length > 0) {
-            const positionClosed = await checkPositionsSLTP();
-            if (useBotStore.getState().activePositions.length === 0 && currentActivePositions.length > 0) {
-                console.log("Position closed by SL/TP/Strategy Exit.");
-                setIsProcessingTrade(false);
-                return;
-            }
-        }
-
-        // --- Check Entry Conditions ---
-        let shouldEnterTrade = false;
-        if (useBotStore.getState().activePositions.length === 0) {
-            console.log("No active position. Checking entry conditions...");
-            const fifteenMinData = await fetchGeckoTerminalOhlcv(poolAddr, 'minute', 15, 10);
-            if (fifteenMinData && currentAnalysis) {
-                if (currentStrategyType === 'TrendTracker') {
-                    shouldEnterTrade = checkTrendTrackerEntry(currentAnalysis, fifteenMinData);
-                } else if (currentStrategyType === 'SmartRange Scout') {
-                    shouldEnterTrade = checkSmartRangeEntry(currentAnalysis, fifteenMinData);
-                }
-            } else {
-                console.warn("Could not fetch recent 15min data or analysis result missing for entry check.");
-            }
-        } else {
-            console.log("Position already active, skipping entry check.");
-        }
-
-        // --- Execute Trade ---
-        if (shouldEnterTrade) {
-            console.log(`Entry conditions met for ${currentStrategyType}. Attempting trade...`);
-            if (currentTestMode) {
-                simulateTradeAction(currentAction);
-            } else {
-                await executeRealTradeAction(currentAction);
-            }
-        } else {
-            console.log("Entry conditions not met or position already open.");
-        }
-
-        setIsProcessingTrade(false);
-      };
-
     // --- Effect Logic ---
     if (status === 'analyzing' && !analysisRunning) {
-        analysisRunning = true;
-        const runInitialAnalysis = async () => {
-            if (!isMountedRef.current) return;
+        analysisRunning = true; // Keep local flag for this effect instance
+        const runInitialAnalysis = async () => { // Define async function inside effect
+            if (!isMountedRef.current || isProcessingRef.current) return; // Check mount and REF lock
             console.log("Starting initial market analysis...");
-            setIsProcessingTrade(true); // Use local state for processing flag
-            const poolAddress = await findPoolAddress(pair);
-            if (!isMountedRef.current) { analysisRunning = false; return; }
+            isProcessingRef.current = true; // Set ref lock
+            setIsProcessingTrade(true); // Set state for UI
+            try { // Wrap in try block
+                const poolAddress = await findPoolAddress(pair);
+                if (!isMountedRef.current) return; // Check mount after await
 
-            if (!poolAddress) {
-                setError(`Could not find pool address for pair: ${pair}`);
-                storeStopBot(); // Stop via store action
-                if (isMountedRef.current) setIsProcessingTrade(false);
-                analysisRunning = false;
-                return;
-            }
-            if (isMountedRef.current) setCurrentPoolAddress(poolAddress);
+                if (!poolAddress) {
+                    setError(`Could not find pool address for pair: ${pair}`);
+                    storeStopBot(); // Stop via store action
+                    // No need to set processing false here, finally block will handle it
+                    return;
+                }
+                if (isMountedRef.current) setCurrentPoolAddress(poolAddress);
 
-            const result = await assessMarketStructure(poolAddress);
-            if (!isMountedRef.current) { analysisRunning = false; return; }
+                const result = await assessMarketStructure(poolAddress);
+                if (!isMountedRef.current) return; // Check mount after await
 
             // --- MODIFICATION START ---
             // Set results but DO NOT transition to 'running' here
@@ -416,10 +446,31 @@ const BotControl = () => {
                  console.log(`Initial analysis complete. Market Condition: ${result.condition}. Ready to run.`);
                  // Let the next effect handle the transition based on analysisResult
             }
-            // --- MODIFICATION END ---
+                // --- MODIFICATION START --- // This duplicated block also needs removing
+                // Set results but DO NOT transition to 'running' here
+/*
+                setAnalysisResult(result);
+                setMarketCondition(result.condition);
 
-            if (isMountedRef.current) setIsProcessingTrade(false);
-            analysisRunning = false;
+                if (result.condition === 'Unclear') {
+                    console.log("Market condition unclear, bot will not start.");
+                    setError("Market condition unclear. Bot stopped.");
+                    storeStopBot(); // Stop via store action
+                } else {
+                     console.log(`Initial analysis complete. Market Condition: ${result.condition}. Ready to run.`);
+                     // Let the next effect handle the transition based on analysisResult
+                }
+*/
+                // --- MODIFICATION END ---
+            } catch (error: any) {
+                 console.error("Error during initial analysis:", error);
+                 setError(`Analysis error: ${error.message}`);
+                 storeStopBot();
+            } finally {
+                 isProcessingRef.current = false; // Release ref lock
+                 if (isMountedRef.current) setIsProcessingTrade(false); // Release state for UI
+                 analysisRunning = false; // Reset local effect flag
+            }
         };
         runInitialAnalysis();
 
@@ -450,10 +501,10 @@ const BotControl = () => {
             console.log("Cleaning up trading loop interval.");
         }
     };
-  // Depend on status, pair, currentPoolAddress, analysisResult to ensure loop setup has prerequisites
-  // Also include functions called within the effect if they rely on props/state or aren't stable references
-  // REMOVED loopLogic from dependencies as it's defined inside
-  }, [status, pair, currentPoolAddress, analysisResult, settings.runIntervalMinutes, storeStopBot, setMarketCondition, setError, checkPositionsSLTP, simulateTradeAction, executeRealTradeAction, isProcessingTrade]); // Added dependencies
+  // Depend on status, pair, settings.runIntervalMinutes, storeStopBot, setMarketCondition, setError
+  // loopLogic is now a stable useCallback reference
+  // Added currentPoolAddress and analysisResult as dependencies as they are used in the 'running' state logic
+  }, [status, pair, settings.runIntervalMinutes, storeStopBot, setMarketCondition, setError, loopLogic, currentPoolAddress, analysisResult]);
 
 
   // --- NEW Effect to handle transition from Analyzing to Running ---
