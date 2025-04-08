@@ -1,0 +1,30 @@
+{
+  "[project]/src/components/WalletConnectionProvider.tsx [app-client] (ecmascript, next/dynamic entry)": {
+    "id": "[project]/src/components/WalletConnectionProvider.tsx [app-client] (ecmascript, next/dynamic entry)",
+    "files": [
+      "static/chunks/node_modules_@noble_curves_esm_d476331b._.js",
+      "static/chunks/node_modules_@solana_web3_js_lib_index_browser_esm_88d65ea0.js",
+      "static/chunks/node_modules_61ae6481._.js",
+      "static/chunks/src_components_WalletConnectionProvider_tsx_55ffe170._.js",
+      "static/chunks/src_components_WalletConnectionProvider_tsx_94653647._.js"
+    ]
+  },
+  "[project]/src/components/BotControl.tsx [app-client] (ecmascript, next/dynamic entry)": {
+    "id": "[project]/src/components/BotControl.tsx [app-client] (ecmascript, next/dynamic entry)",
+    "files": [
+      "static/chunks/src_3d6d1ab1._.js",
+      "static/chunks/node_modules_@noble_curves_esm_d476331b._.js",
+      "static/chunks/node_modules_@solana_web3_js_lib_index_browser_esm_88d65ea0.js",
+      "static/chunks/node_modules_9be62487._.js",
+      "static/chunks/src_components_BotControl_tsx_d1bc9d57._.js"
+    ]
+  },
+  "[project]/src/components/Header.tsx [app-client] (ecmascript, next/dynamic entry)": {
+    "id": "[project]/src/components/Header.tsx [app-client] (ecmascript, next/dynamic entry)",
+    "files": [
+      "static/chunks/node_modules_@solana_wallet-adapter-react-ui_lib_esm_index_d3f1e188.js",
+      "static/chunks/_72b92e05._.js",
+      "static/chunks/src_components_Header_tsx_94653647._.js"
+    ]
+  }
+}

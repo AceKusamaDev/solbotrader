@@ -7,8 +7,8 @@ import { WalletModalProvider } from '@solana/wallet-adapter-react-ui';
 import { PhantomWalletAdapter } from '@solana/wallet-adapter-wallets'; // Add other wallets if needed
 import { clusterApiUrl } from '@solana/web3.js';
 
-// Default styles for the modal
-require('@solana/wallet-adapter-react-ui/styles.css');
+// Default styles for the modal are now imported in layout.tsx
+// require('@solana/wallet-adapter-react-ui/styles.css');
 
 export default function WalletConnectionProvider({ children }: { children: React.ReactNode }) {
   // Can be set to 'devnet', 'testnet', or 'mainnet-beta'

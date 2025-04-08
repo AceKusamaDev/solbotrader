@@ -2,6 +2,7 @@
 
 import { Inter } from 'next/font/google';
 import './globals.css';
+import '@solana/wallet-adapter-react-ui/styles.css'; // Import wallet adapter UI styles globally
 import dynamic from 'next/dynamic';
 import { Providers } from './providers';
 

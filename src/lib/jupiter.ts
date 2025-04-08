@@ -226,11 +226,18 @@ const useJupiterTrading = () => {
       
       // Prepare swap transaction - use the passed userPublicKeyString
       console.log('Preparing swap transaction...');
+      // Assert that userPublicKeyString is non-null here, as the initial check guarantees it.
+      // This satisfies TypeScript's strict checking within the async function scope.
+      if (!userPublicKeyString) {
+         // This should theoretically never happen due to the check at the function start
+         console.error("Critical Error: userPublicKeyString is null despite initial check.");
+         throw new Error("User public key is unexpectedly null during swap preparation.");
+      }
       const swapResponse = await prepareJupiterSwapTransaction({
         quoteResponse,
-        userPublicKey: userPublicKeyString, // Use the string version here
+        userPublicKey: userPublicKeyString, // TypeScript now knows this is a string
       });
-      
+
       console.log('Swap transaction prepared:', swapResponse);
       
       // Execute swap - pass sendTransaction function
