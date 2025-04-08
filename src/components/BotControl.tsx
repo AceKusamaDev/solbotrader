@@ -1,555 +1,658 @@
 'use client';
 
-import React, { useState, useEffect, useRef } from 'react'; // Import useRef
-import { useWallet } from '@solana/wallet-adapter-react'; // Import useWallet
-import { DEFAULT_STOP_LOSS_CONFIG, Position, checkStopLoss, formatStopLossMessage } from '@/lib/safetyFeatures';
-// Remove .ts extension from import
-import useJupiterTrading, { SOL_MINT, USDC_MINT } from '@/lib/jupiter'; 
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { useWallet } from '@solana/wallet-adapter-react';
+// Import safety features (including TP types/functions now)
+import {
+    Position,
+    StopLossConfig, checkStopLoss, formatStopLossMessage,
+    TakeProfitConfig, checkTakeProfit, formatTakeProfitMessage // Ensure TP imports are here
+} from '@/lib/safetyFeatures';
+import useJupiterTrading, { SOL_MINT, USDC_MINT } from '@/lib/jupiter';
+import useBotStore, { Trade } from '@/store/useBotStore'; // Import Zustand store and Trade type
+// Import market data and analysis functions
+import { findPoolAddress, fetchGeckoTerminalOhlcv } from '@/lib/marketData'; // Import fetch function
+import {
+    assessMarketStructure,
+    checkTrendTrackerEntry,
+    checkSmartRangeEntry,
+    AnalysisResult // Import AnalysisResult type
+} from '@/lib/marketAnalysis';
 
-// Define StrategyParams interface
-export interface StrategyParams {
-  type: string;
-  indicators: Array<{
-    type: string;
-    parameters: any;
-  }>;
-  amount: number;
-  pair: string;
-  action: 'buy' | 'sell';
-}
 
-// Define Trade interface for state typing
-interface Trade {
-  timestamp: string;
-  pair: string;
-  action: 'buy' | 'sell';
-  amount: number;
-  price: string; // Keep as string since it's sometimes '0' on failure
-  strategy: string;
-  success: boolean;
-  signature?: string; // Optional signature
-  error?: string; // Optional error message
-}
+// BotControl component refactored to use Zustand store
+const BotControl = () => {
+  // Local state for UI feedback or component-specific logic
+  const [stopLossTriggeredUI, setStopLossTriggeredUI] = useState(false);
+  const [stopLossMessageUI, setStopLossMessageUI] = useState('');
+  // Add local state for TP message display if needed
+  // const [takeProfitTriggeredUI, setTakeProfitTriggeredUI] = useState(false);
+  // const [takeProfitMessageUI, setTakeProfitMessageUI] = useState('');
+  const tradingIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const [isProcessingTrade, setIsProcessingTrade] = useState(false); // Local state for disabling buttons during trade
+  const [currentPoolAddress, setCurrentPoolAddress] = useState<string | null>(null); // Cache pool address
+  const [analysisResult, setAnalysisResult] = useState<AnalysisResult | null>(null); // Store last analysis
 
-// BotControl component with real trading functionality
-// Add explicit type for strategyParams prop
-const BotControl = ({ strategyParams }: { strategyParams: StrategyParams }) => { 
-  const [isRunning, setIsRunning] = useState(false);
-  const [isTestMode, setIsTestMode] = useState(true);
-  // Use Trade type for state
-  const [lastTrade, setLastTrade] = useState<Trade | null>(null); 
-  const [tradeHistory, setTradeHistory] = useState<Trade[]>([]); 
-  const [activePositions, setActivePositions] = useState<Position[]>([]);
-  const [stopLossConfig, setStopLossConfig] = useState(DEFAULT_STOP_LOSS_CONFIG);
-  const [stopLossTriggered, setStopLossTriggered] = useState(false);
-  const [stopLossMessage, setStopLossMessage] = useState('');
-  // Use useRef to store the interval ID
-  const tradingIntervalRef = useRef<NodeJS.Timeout | null>(null); 
-  const [isProcessingTrade, setIsProcessingTrade] = useState(false);
+  // --- Get state and actions from Zustand store ---
+  const {
+    status,
+    settings,
+    activePositions,
+    tradeHistory,
+    errorMessage, // Get error message from store state
+    marketCondition, // Get market condition
+    startBot: storeStartBot,
+    stopBot: storeStopBot,
+    toggleTestMode: storeToggleTestMode,
+    addPosition,
+    removePosition,
+    addTradeHistory,
+    setError,
+    setRunning,
+    setAnalyzing,
+    setSettings,
+    setMarketCondition, // Action to update market condition
+  } = useBotStore((state) => state);
 
-  // Get wallet context using useWallet hook
-  const { publicKey, connected: isWalletConnected, sendTransaction } = useWallet(); 
-  
-  // Get Jupiter trading function (no longer provides wallet state)
-  const { executeTradeWithStrategy } = useJupiterTrading(); 
-  
-  // Clean up interval on unmount
+  // Destructure settings for easier access
+  const {
+    isTestMode,
+    stopLossPercentage,
+    takeProfitPercentage, // Destructure TP setting
+    maxRuns,
+    runIntervalMinutes,
+    compoundCapital,
+    strategyType,
+    amount,
+    pair,
+    action, // Default action from settings
+  } = settings;
+
+  // Get wallet context
+  const { publicKey, connected: isWalletConnected, sendTransaction } = useWallet();
+  // Get Jupiter trading function
+  const { executeTradeWithStrategy } = useJupiterTrading();
+
+  // --- Effects ---
+
+  // Effect to clear interval on unmount or when bot stops
   useEffect(() => {
-    // Return a cleanup function
+    if (status === 'stopped' && tradingIntervalRef.current) {
+      clearInterval(tradingIntervalRef.current);
+      tradingIntervalRef.current = null;
+    }
     return () => {
-      // Clear the interval using the ref's current value
-      if (tradingIntervalRef.current) { 
+      if (tradingIntervalRef.current) {
         clearInterval(tradingIntervalRef.current);
       }
     };
-  }, []); // Empty dependency array ensures this runs only on mount and unmount
-  
-  // Function to start trading bot
-  const startBot = async () => {
-    // Use connected and publicKey from useWallet
-    if (!isWalletConnected || !publicKey) { 
-      alert("Please connect your Phantom wallet first");
-      return;
-    }
-    
-    setIsRunning(true);
-    setStopLossTriggered(false);
-    setStopLossMessage('');
-    
-    if (isTestMode) {
-      simulateTrading();
-    } else {
-      // Real trading mode
-      startRealTrading();
-    }
-  };
-  
-  // Function to stop trading bot
-  const stopBot = () => {
-    setIsRunning(false);
-    // Clear interval using the ref
-    if (tradingIntervalRef.current) { 
-      clearInterval(tradingIntervalRef.current);
-      tradingIntervalRef.current = null; // Reset the ref
-    }
-  };
-  
-  // Function to toggle test mode
-  const toggleTestMode = () => {
-    if (isRunning) {
-      alert("Please stop the bot before changing modes");
-      return;
-    }
-    setIsTestMode(!isTestMode);
-  };
-  
-  // Function to handle stop loss
-  const handleStopLoss = async (position: Position, currentPrice: number) => {
-    if (checkStopLoss(position, currentPrice, stopLossConfig)) {
-      // Stop loss triggered
-      const message = formatStopLossMessage(position, currentPrice, stopLossConfig);
-      console.log(message);
-      
-      if (!isTestMode) {
-        // Execute real exit trade for stop loss
-        try {
-          setIsProcessingTrade(true);
-          
-          // Determine token mints based on pair
-          const [baseCurrency, quoteCurrency] = position.pair.split('/');
-          const inputMint = position.action === 'buy' ? SOL_MINT : USDC_MINT;
-          const outputMint = position.action === 'buy' ? USDC_MINT : SOL_MINT;
-          
-          // Execute opposite action for exit
-          const exitAction = position.action === 'buy' ? 'sell' : 'buy';
-          
-          // Convert amount to lamports/smallest unit
-          const amountInSmallestUnit = (position.amount * 1000000000).toString(); // For SOL to lamports
-          
-          // Execute trade with Jupiter
-          const result = await executeTradeWithStrategy(
-            inputMint,
-            outputMint,
-            amountInSmallestUnit,
-            0.5, // Use fixed 0.5% slippage like regular trades
-            'Stop Loss',
-            // Pass wallet context
-            publicKey,
-            sendTransaction,
-            publicKey?.toBase58() || null 
-          );
-          
-          if (result.success) {
-            // Create exit trade record
-            const now = new Date();
-            // Cast exitAction to the correct type
-            const exitTrade: Trade = { 
-              timestamp: now.toISOString(),
-              pair: position.pair,
-              action: exitAction as 'buy' | 'sell', 
-              amount: position.amount,
-              price: currentPrice.toFixed(2),
-              strategy: 'Stop Loss',
-              success: true,
-              signature: result.signature,
-            };
-            
-            // Update trade history
-            setLastTrade(exitTrade);
-            setTradeHistory(prev => [exitTrade, ...prev].slice(0, 10));
-            
-            // Remove position from active positions
-            setActivePositions(prev => prev.filter(p => p.id !== position.id));
-            
-            // Set stop loss message
-            setStopLossTriggered(true);
-            setStopLossMessage(message);
-          } else {
-            console.error('Stop loss trade failed:', result.error);
-          }
-        } catch (error) {
-          console.error('Error executing stop loss:', error);
-        } finally {
+  }, [status]);
+
+  // Effect to run initial analysis when bot starts
+  useEffect(() => {
+    const runInitialAnalysis = async () => {
+      if (status === 'analyzing') {
+        console.log("Starting initial market analysis...");
+        setIsProcessingTrade(true); // Indicate analysis is in progress
+        const poolAddress = currentPoolAddress ?? await findPoolAddress(pair); // Use cache or find
+        if (!poolAddress) {
+          setError(`Could not find pool address for pair: ${pair}`);
+          storeStopBot(); // Stop if pool not found
           setIsProcessingTrade(false);
+          return;
         }
-      } else {
-        // Test mode - simulate exit trade
-        const exitAction = position.action === 'buy' ? 'sell' : 'buy';
-        const now = new Date();
-        // Cast exitAction to the correct type
-        const exitTrade: Trade = { 
-          timestamp: now.toISOString(),
-          pair: position.pair,
-          action: exitAction as 'buy' | 'sell', 
-          amount: position.amount,
-          price: currentPrice.toFixed(2),
-          strategy: 'Stop Loss',
-          success: true,
-          signature: 'simulated_stop_loss_' + Math.random().toString(36).substring(2, 15),
-        };
-        
-        // Update trade history
-        setLastTrade(exitTrade);
-        setTradeHistory(prev => [exitTrade, ...prev].slice(0, 10));
-        
-        // Remove position from active positions
-        setActivePositions(prev => prev.filter(p => p.id !== position.id));
-        
-        // Set stop loss message
-        setStopLossTriggered(true);
-        setStopLossMessage(message);
+        if (!currentPoolAddress) setCurrentPoolAddress(poolAddress); // Store if newly found
+
+        const result = await assessMarketStructure(poolAddress);
+        setAnalysisResult(result); // Store analysis result locally
+        setMarketCondition(result.condition); // Update store
+
+        if (result.condition === 'Unclear') {
+          console.log("Market condition unclear, bot will not start trading loop.");
+           setError("Market condition unclear. Bot stopped.");
+           storeStopBot();
+        } else {
+          console.log(`Initial analysis complete. Market Condition: ${result.condition}. Starting trading loop.`);
+          setRunning(); // Set status to running to trigger the trading loop useEffect
+        }
+        setIsProcessingTrade(false);
       }
-      
-      return true;
-    }
-    return false;
-  };
-  
-  // Simulate trading activity for demonstration (test mode only)
-  const simulateTrading = () => {
-    const interval = setInterval(() => {
-      if (!isRunning) {
-        clearInterval(interval);
-        return;
-      }
-      
-      const now = new Date();
-      const action = Math.random() > 0.5 ? 'buy' : 'sell';
-      const price = parseFloat((Math.random() * 100 + 50).toFixed(2));
-      const amount = parseFloat((Math.random() * strategyParams.amount).toFixed(3));
-      
-      // Create simulated trade
-      // Cast action to the correct type
-      const trade: Trade = { 
-        timestamp: now.toISOString(),
-        pair: strategyParams.pair,
-        action: action as 'buy' | 'sell', 
-        amount,
-        price: price.toString(), // Ensure price is string
-        strategy: strategyParams.type,
-        success: Math.random() > 0.1, // 90% success rate
-        signature: 'simulated_tx_' + Math.random().toString(36).substring(2, 15),
+    };
+    runInitialAnalysis();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status, pair]); // Rerun analysis if status becomes 'analyzing' or pair changes
+
+
+  // Effect to handle the main trading loop based on status
+  useEffect(() => {
+    if (status === 'running' && !tradingIntervalRef.current && currentPoolAddress && analysisResult) {
+      console.log(`Starting trading loop (Test Mode: ${isTestMode}). Interval: ${runIntervalMinutes} mins.`);
+
+      const loopLogic = async () => {
+        console.log("Trading loop iteration...");
+        if (isProcessingTrade) {
+            console.log("Skipping loop iteration: Trade/Analysis in progress.");
+            return;
+        }
+        setIsProcessingTrade(true); // Lock for this iteration
+
+        // --- Check SL/TP First ---
+        let positionClosed = false;
+        if (activePositions.length > 0) {
+            positionClosed = await checkPositionsSLTP(); // Check returns true if a position was closed
+            // If SL/TP closed the position, activePositions in store is updated
+            // We need to get the latest state *after* the check
+             if (useBotStore.getState().activePositions.length === 0 && activePositions.length > 0) {
+                 console.log("Position closed by SL/TP.");
+                 // TODO: Handle run count incrementing here?
+                 setIsProcessingTrade(false);
+                 return; // Skip trying to open a new trade this iteration
+             }
+        }
+
+        // --- Re-assess Market Condition Periodically? (Optional) ---
+        // Could add logic here, e.g., every N loops
+
+        // --- Check Entry Conditions ---
+        let shouldEnterTrade = false;
+        // Only check entry if no position exists *after* SL/TP check
+        if (useBotStore.getState().activePositions.length === 0) {
+            // Fetch latest 15-min data for entry check
+            const fifteenMinData = await fetchGeckoTerminalOhlcv(currentPoolAddress, 'minute', 15, 10); // Fetch recent data
+
+            if (fifteenMinData && analysisResult) { // Ensure analysisResult is still valid
+                 if (strategyType === 'TrendTracker') {
+                    shouldEnterTrade = checkTrendTrackerEntry(analysisResult, fifteenMinData);
+                 } else if (strategyType === 'SmartRange Scout') {
+                    shouldEnterTrade = checkSmartRangeEntry(analysisResult, fifteenMinData);
+                 }
+            } else {
+                console.warn("Could not fetch recent 15min data for entry check.");
+            }
+        }
+
+        // --- Execute Trade ---
+        if (shouldEnterTrade) {
+            console.log(`Entry conditions met for ${strategyType}. Attempting trade...`);
+            if (isTestMode) {
+                simulateTradeAction(action); // Pass the intended action
+            } else {
+                await executeRealTradeAction(action); // Pass the intended action
+            }
+            // TODO: Handle run count incrementing after successful entry/exit cycle?
+        } else {
+            console.log("Entry conditions not met or position already open.");
+        }
+
+        setIsProcessingTrade(false); // Re-enable buttons
       };
-      
-      // Update trade history
-      setLastTrade(trade);
-      setTradeHistory(prev => [trade, ...prev].slice(0, 10));
-      
-      // If trade is successful, add to active positions
-      if (trade.success) {
-        const newPosition: Position = {
-          id: `pos-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`,
-          pair: trade.pair,
-          entryPrice: price,
-          amount,
-          timestamp: trade.timestamp,
-          action: action as 'buy' | 'sell',
-        };
-        
-        setActivePositions(prev => [...prev, newPosition]);
-      }
-      
-      // Check stop loss for all active positions
-      setActivePositions(prev => {
-        const updatedPositions = [...prev];
-        
-        // Simulate price movement for each position
-        for (const position of [...updatedPositions]) {
-          // Simulate current price with some random movement
-          const priceMovement = (Math.random() * 6) - 3; // -3% to +3%
-          const currentPrice = position.entryPrice * (1 + priceMovement / 100);
-          
-          // Check if stop loss should be triggered
-          handleStopLoss(position, currentPrice);
-        }
-        
-        return updatedPositions.filter(p => 
-          !handleStopLoss(p, p.entryPrice * (1 - (Math.random() * 5) / 100))
-        );
-      });
-      
-    }, 10000); // Simulate a trade every 10 seconds
-    
-    // Store interval ID in the ref
-    tradingIntervalRef.current = interval; 
-  };
-  
-  // Start real trading with Jupiter
-  const startRealTrading = async () => {
-    // Remove check for walletPublicKey (no longer exists here)
-    if (!isWalletConnected || !publicKey) { 
+
+      // Initial run + Interval
+      loopLogic(); // Run immediately on start
+      tradingIntervalRef.current = setInterval(loopLogic, runIntervalMinutes * 60 * 1000);
+
+    } else if (status !== 'running' && tradingIntervalRef.current) {
+      // Clear interval if status is not 'running' anymore
+      clearInterval(tradingIntervalRef.current);
+      tradingIntervalRef.current = null;
+      console.log("Trading loop stopped.");
+    }
+    // Dependencies
+  }, [status, isTestMode, runIntervalMinutes, currentPoolAddress, analysisResult, activePositions.length, pair, action, strategyType, amount]); // Add relevant dependencies
+
+
+  // --- Event Handlers ---
+
+  const handleStartBot = () => {
+    if (!isWalletConnected || !publicKey) {
       alert("Please connect your Phantom wallet first");
       return;
     }
-    
-    // Execute initial trade based on strategy parameters
-    await executeRealTrade();
-    
-    // Set up interval for periodic trading
-    const interval = setInterval(async () => {
-      if (!isRunning) {
-        clearInterval(interval);
-        return;
-      }
-      
-      // Execute trade based on strategy
-      await executeRealTrade();
-      
-      // Check stop loss for all active positions
-      const currentPrice = await fetchCurrentPrice(strategyParams.pair);
-      
-      if (currentPrice) {
-        for (const position of [...activePositions]) {
-          await handleStopLoss(position, currentPrice);
-        }
-      }
-      
-    }, 60000); // Execute a trade every minute
-    
-    // Store interval ID in the ref
-    tradingIntervalRef.current = interval; 
+    setStopLossTriggeredUI(false); // Reset local UI state
+    setStopLossMessageUI('');
+    storeStartBot(); // Sets status to 'analyzing', triggers the analysis useEffect
   };
-  
-  // Execute a real trade using Jupiter
-  const executeRealTrade = async () => {
-    if (isProcessingTrade) return;
-    
-    try {
-      setIsProcessingTrade(true);
-      
-      // Determine token mints based on pair
-      const [baseCurrency, quoteCurrency] = strategyParams.pair.split('/');
-      const inputMint = strategyParams.action === 'buy' ? USDC_MINT : SOL_MINT;
-      const outputMint = strategyParams.action === 'buy' ? SOL_MINT : USDC_MINT;
-      
-      // Convert amount to lamports/smallest unit
-      const amountInSmallestUnit = (strategyParams.amount * 1000000000).toString(); // For SOL to lamports
-      
-      console.log(`Executing real trade: ${strategyParams.action} ${strategyParams.amount} ${strategyParams.pair}`);
-      
-      // Execute trade with Jupiter
-      const result = await executeTradeWithStrategy(
-        inputMint,
-            outputMint,
-            amountInSmallestUnit,
-            0.5, // 0.5% slippage
-            strategyParams.type,
-            // Pass wallet context
-            publicKey,
-            sendTransaction,
-            publicKey?.toBase58() || null
-          );
-          
-          console.log('Trade result:', result);
-      
-      if (result.success) {
-        // Get current price
-        const currentPrice = await fetchCurrentPrice(strategyParams.pair) || 
-                            parseFloat((Math.random() * 100 + 50).toFixed(2)); // Fallback to random price
-        
-        // Create trade record
-        const now = new Date();
-        // Ensure type safety
-        const trade: Trade = { 
-          timestamp: now.toISOString(),
-          pair: strategyParams.pair,
-          action: strategyParams.action, // Already 'buy' | 'sell' from StrategyParams
-          amount: strategyParams.amount,
-          price: currentPrice.toFixed(2),
-          strategy: strategyParams.type,
-          success: true,
-          signature: result.signature,
-        };
-        
-        // Update trade history
-        setLastTrade(trade);
-        setTradeHistory(prev => [trade, ...prev].slice(0, 10));
-        
-        // Add to active positions
-        const newPosition: Position = {
-          id: `pos-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`,
-          pair: trade.pair,
-          entryPrice: currentPrice,
-          amount: strategyParams.amount,
-          timestamp: trade.timestamp,
-          action: strategyParams.action as 'buy' | 'sell',
-        };
-        
-        setActivePositions(prev => [...prev, newPosition]);
-      } else {
-        // Handle failed trade
-        console.error('Trade failed:', result.error);
-        
-        // Create failed trade record
-        const now = new Date();
-        // Ensure type safety
-        const failedTrade: Trade = { 
-          timestamp: now.toISOString(),
-          pair: strategyParams.pair,
-          action: strategyParams.action, // Already 'buy' | 'sell' from StrategyParams
-          amount: strategyParams.amount,
-          price: '0',
-          strategy: strategyParams.type,
-          success: false,
-          error: result.error,
-        };
-        
-        // Update trade history
-        setLastTrade(failedTrade);
-        setTradeHistory(prev => [failedTrade, ...prev].slice(0, 10));
-      }
-    } catch (error) {
-      console.error('Error executing trade:', error);
-    } finally {
-      setIsProcessingTrade(false);
+
+  const handleStopBot = () => {
+    storeStopBot(); // Sets status to 'stopped', useEffect clears interval
+  };
+
+  const handleToggleTestMode = () => {
+    storeToggleTestMode(); // Store action handles the check
+  };
+
+  // Handler for SL/TP/Runs/Interval/Compounding changes
+  const handleSettingChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
+    const { name, value, type } = e.target;
+    let parsedValue: string | number | boolean = value;
+
+    if (type === 'number') {
+      parsedValue = parseFloat(value);
+      if (isNaN(parsedValue)) return;
+      if ((name === 'stopLossPercentage' || name === 'takeProfitPercentage') && parsedValue < 0) parsedValue = 0;
+      if (name === 'maxRuns' && parsedValue < 1) parsedValue = 1;
+      if (name === 'runIntervalMinutes' && parsedValue < 1) parsedValue = 1;
+    } else if (type === 'checkbox') {
+      parsedValue = (e.target as HTMLInputElement).checked;
     }
+    setSettings({ [name]: parsedValue });
   };
-  
-  // Fetch current price for a trading pair
-  const fetchCurrentPrice = async (pair: string) => {
-    // Only fetch SOL price for now, ignore pair parameter
-    const apiKey = process.env.NEXT_PUBLIC_COINGECKO_API_KEY;
-    let url = 'https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd';
-    
-    // Add API key if available
-    if (apiKey) {
-      url += `&x_cg_demo_api_key=${apiKey}`;
+
+
+  // --- Core Logic Functions ---
+
+  const handleStopLoss = async (position: Position, currentPrice: number): Promise<boolean> => {
+    const currentStopLossConfig: StopLossConfig = { enabled: true, percentage: stopLossPercentage };
+    if (!checkStopLoss(position, currentPrice, currentStopLossConfig)) return false;
+
+    const message = formatStopLossMessage(position, currentPrice, currentStopLossConfig);
+    console.log(`STOP LOSS TRIGGERED: ${message}`);
+    setStopLossTriggeredUI(true);
+    setStopLossMessageUI(message);
+
+    if (!isTestMode) {
+      try {
+        setIsProcessingTrade(true);
+        const exitAction = position.action === 'buy' ? 'sell' : 'buy';
+        const [base, quote] = position.pair.split('/');
+        // TODO: Get mints dynamically based on pair/tokens
+        const inputMint = position.action === 'buy' ? SOL_MINT : USDC_MINT;
+        const outputMint = position.action === 'buy' ? USDC_MINT : SOL_MINT;
+        // TODO: Get decimals dynamically
+        const amountInSmallestUnit = (position.amount * Math.pow(10, 9)).toString();
+
+        const result = await executeTradeWithStrategy(
+          inputMint, outputMint, amountInSmallestUnit, 0.5, 'Stop Loss',
+          publicKey, sendTransaction, publicKey?.toBase58() || null
+        );
+        if (result.success) {
+          const exitTrade: Trade = {
+            id: `sl-${Date.now()}`, timestamp: new Date().toISOString(), pair: position.pair,
+            action: exitAction, amount: position.amount, price: currentPrice,
+            strategy: 'Stop Loss', success: true, signature: result.signature,
+          };
+          addTradeHistory(exitTrade);
+          removePosition(position.id); // Remove position from store
+        } else { setError(`Stop loss trade failed: ${result.error}`); }
+      } catch (error: any) { setError(`Error executing stop loss: ${error.message}`); }
+      finally { setIsProcessingTrade(false); }
     } else {
-      // Warn if key is missing, as requests might fail without it
-      console.warn('CoinGecko API key not found. Price fetching might be unreliable.');
+      const exitAction = position.action === 'buy' ? 'sell' : 'buy';
+      const exitTrade: Trade = {
+        id: `sl-sim-${Date.now()}`, timestamp: new Date().toISOString(), pair: position.pair,
+        action: exitAction, amount: position.amount, price: currentPrice,
+        strategy: 'Stop Loss', success: true,
+        signature: 'simulated_stop_loss_' + Math.random().toString(36).substring(2, 9),
+      };
+      addTradeHistory(exitTrade);
+      removePosition(position.id); // Remove position from store
     }
+    return true; // SL triggered
+  };
+
+  const handleTakeProfit = async (position: Position, currentPrice: number): Promise<boolean> => {
+    const currentTakeProfitConfig: TakeProfitConfig = { enabled: true, percentage: takeProfitPercentage };
+    if (!checkTakeProfit(position, currentPrice, currentTakeProfitConfig)) return false;
+
+    const message = formatTakeProfitMessage(position, currentPrice, currentTakeProfitConfig);
+    console.log(`TAKE PROFIT TRIGGERED: ${message}`);
+    // Add local UI state update if needed: setTakeProfitTriggeredUI(true); setTakeProfitMessageUI(message);
+
+    if (!isTestMode) {
+      try {
+        setIsProcessingTrade(true);
+        const exitAction = position.action === 'buy' ? 'sell' : 'buy';
+        const [base, quote] = position.pair.split('/');
+        const inputMint = position.action === 'buy' ? SOL_MINT : USDC_MINT;
+        const outputMint = position.action === 'buy' ? USDC_MINT : SOL_MINT; // Corrected: Sell SOL for USDC
+        const amountInSmallestUnit = (position.amount * Math.pow(10, 9)).toString();
+
+        const result = await executeTradeWithStrategy(
+          inputMint, outputMint, amountInSmallestUnit, 0.5, 'Take Profit',
+          publicKey, sendTransaction, publicKey?.toBase58() || null
+        );
+        if (result.success) {
+          const exitTrade: Trade = {
+            id: `tp-${Date.now()}`, timestamp: new Date().toISOString(), pair: position.pair,
+            action: exitAction, amount: position.amount, price: currentPrice,
+            strategy: 'Take Profit', success: true, signature: result.signature,
+          };
+          addTradeHistory(exitTrade);
+          removePosition(position.id);
+        } else { setError(`Take profit trade failed: ${result.error}`); }
+      } catch (error: any) { setError(`Error executing take profit: ${error.message}`); }
+      finally { setIsProcessingTrade(false); }
+    } else {
+      const exitAction = position.action === 'buy' ? 'sell' : 'buy';
+      const exitTrade: Trade = {
+        id: `tp-sim-${Date.now()}`, timestamp: new Date().toISOString(), pair: position.pair,
+        action: exitAction, amount: position.amount, price: currentPrice,
+        strategy: 'Take Profit', success: true,
+        signature: 'simulated_take_profit_' + Math.random().toString(36).substring(2, 9),
+      };
+      addTradeHistory(exitTrade);
+      removePosition(position.id);
+    }
+    return true; // TP triggered
+  };
+
+  // Simulate a single trade action (entry or exit)
+  const simulateTradeAction = (simAction: 'buy' | 'sell') => { // Accept action
+    console.log(`Simulating ${simAction} action...`);
+    const simPrice = parseFloat((Math.random() * 100 + 50).toFixed(2));
+    const simAmount = parseFloat((Math.random() * amount).toFixed(3)); // Use amount from settings
+
+    const trade: Trade = {
+        id: `sim-entry-${Date.now()}`, timestamp: new Date().toISOString(), pair, action: simAction,
+        amount: simAmount, price: simPrice, strategy: strategyType, success: true,
+        signature: 'sim_entry_' + Math.random().toString(36).substring(2, 9),
+    };
+    addTradeHistory(trade);
+    const newPosition: Position = {
+        id: `pos-${Date.now()}`, pair, entryPrice: simPrice, amount: simAmount,
+        timestamp: trade.timestamp, action: simAction
+    };
+    addPosition(newPosition);
+  };
+
+  // Execute a real trade based on strategy decision
+  const executeRealTradeAction = async (tradeAction: 'buy' | 'sell') => {
+      if (isProcessingTrade || !currentPoolAddress) return; // Need pool address
+      console.log(`Attempting real ${tradeAction} trade...`);
+      setIsProcessingTrade(true);
+      try {
+          // TODO: Get mints dynamically based on pair
+          const inputMint = tradeAction === 'buy' ? USDC_MINT : SOL_MINT;
+          const outputMint = tradeAction === 'buy' ? SOL_MINT : USDC_MINT;
+          // TODO: Get decimals dynamically
+          const amountInSmallestUnit = (amount * Math.pow(10, 9)).toString(); // Use amount from settings
+
+          const result = await executeTradeWithStrategy(
+              inputMint, outputMint, amountInSmallestUnit, 0.5, // 0.5% slippage
+              strategyType, publicKey, sendTransaction, publicKey?.toBase58() || null
+          );
+
+          if (result.success && result.expectedOutputAmount) { // Assuming execute returns price info
+              // TODO: Need a reliable way to get execution price post-trade
+              const approxPrice = parseFloat(result.inputAmount || '0') / parseFloat(result.expectedOutputAmount); // Very rough estimate
+              const trade: Trade = {
+                  id: `real-${Date.now()}`, timestamp: new Date().toISOString(), pair, action: tradeAction,
+                  amount: amount, price: isNaN(approxPrice) ? 0 : approxPrice, strategy: strategyType, success: true, signature: result.signature
+              };
+              addTradeHistory(trade);
+              const newPosition: Position = {
+                  id: `pos-${Date.now()}`, pair, entryPrice: isNaN(approxPrice) ? 0 : approxPrice, amount: amount,
+                  timestamp: trade.timestamp, action: tradeAction
+              };
+              addPosition(newPosition);
+          } else {
+              setError(`Trade execution failed: ${result.error}`);
+              const failedTrade: Trade = {
+                  id: `fail-${Date.now()}`, timestamp: new Date().toISOString(), pair, action: tradeAction,
+                  amount: amount, price: 0, strategy: strategyType, success: false, error: result.error
+              };
+              addTradeHistory(failedTrade);
+          }
+      } catch (e: any) { setError(`Trade execution error: ${e.message}`); }
+      finally { setIsProcessingTrade(false); }
+  };
+
+   // Check Stop Loss and Take Profit for all active positions
+   const checkPositionsSLTP = async (): Promise<boolean> => { // Return true if a position was closed
+       if (activePositions.length === 0 || !currentPoolAddress) return false;
+       console.log("Checking SL/TP...");
+
+       const currentPrice = await fetchCurrentPrice(pair); // Use pair from settings
+
+       if (currentPrice) {
+           console.log(`Current price for SL/TP check: ${currentPrice}`);
+           for (const position of [...activePositions]) { // Iterate over a copy
+               // Check TP first. If it triggers and closes the position, return true.
+               const tpTriggered = await handleTakeProfit(position, currentPrice);
+               if (tpTriggered) return true; // Position closed by TP, stop checking this iteration
+
+               // If TP didn't trigger, check SL. If it triggers, return true.
+               const slTriggered = await handleStopLoss(position, currentPrice);
+               if (slTriggered) return true; // Position closed by SL, stop checking this iteration
+           }
+       } else {
+           console.warn("Could not fetch current price for SL/TP check.");
+       }
+       return false; // No position closed
+   };
+
+
+  // Fetch current price (using GeckoTerminal 1-min candle close)
+  const fetchCurrentPrice = async (fetchPair: string): Promise<number | null> => {
+    // console.log(`Fetching current price for ${fetchPair} using GeckoTerminal`); // Reduce verbosity
+    const poolAddress = currentPoolAddress ?? await findPoolAddress(fetchPair);
+    if (!poolAddress) {
+        console.error("Cannot fetch price, pool address unknown.");
+        return null;
+    }
+    if (poolAddress !== currentPoolAddress) setCurrentPoolAddress(poolAddress); // Cache if found now
 
     try {
-      const response = await fetch(url);
-      
-      if (!response.ok) {
-        // Log CoinGecko API errors
-        console.error(`CoinGecko API error: ${response.status} ${response.statusText}`);
-        try {
-          const errorData = await response.json();
-          console.error('CoinGecko error details:', errorData);
-        } catch (e) { /* Ignore if error response is not JSON */ }
-        return null; // Return null on error
-      }
-
-      const data = await response.json();
-      
-      if (data && data.solana && data.solana.usd) {
-        return data.solana.usd;
-      }
-      
-      return null;
-    } catch (error) {
-      console.error('Error fetching price:', error);
+        const latestCandle = await fetchGeckoTerminalOhlcv(poolAddress, 'minute', 1, 1);
+        const price = latestCandle?.[0]?.close;
+        if (price) {
+            // console.log(`Latest close price: ${price}`);
+            return price;
+        } else {
+            console.warn("Could not get latest close price from GeckoTerminal.");
+            return null;
+        }
+    } catch (error: any) {
+      console.error('Error fetching current price from GeckoTerminal:', error.message);
       return null;
     }
   };
-  
+
+  // --- JSX Rendering ---
+  const isRunning = status === 'running' || status === 'analyzing';
+  const lastTrade = tradeHistory.length > 0 ? tradeHistory[0] : null;
+
   return (
-    <div className="bg-gray-800 p-6 rounded-lg">
-      <h2 className="text-xl font-bold mb-4">Bot Control</h2>
-      
-      <div className="flex items-center mb-4">
-        <span className="mr-2">Test Mode:</span>
-        <button 
-          onClick={toggleTestMode}
-          className={`px-3 py-1 rounded-md ${isTestMode ? 'bg-green-600' : 'bg-gray-600'}`}
-          disabled={isRunning}
+    <div className="bg-gray-800 p-6 rounded-lg shadow-lg space-y-4">
+      <h2 className="text-xl font-bold text-white">Bot Control</h2>
+
+      {/* Test Mode Toggle */}
+      <div className="flex items-center">
+        <label htmlFor="testModeToggle" className="mr-2 text-gray-300">Test Mode:</label>
+        <button
+          id="testModeToggle"
+          onClick={handleToggleTestMode}
+          className={`px-3 py-1 rounded-md text-sm font-medium transition-colors ${
+            isTestMode ? 'bg-green-600 hover:bg-green-700' : 'bg-gray-600 hover:bg-gray-500'
+          } ${status !== 'stopped' ? 'opacity-50 cursor-not-allowed' : 'text-white'}`}
+          disabled={status !== 'stopped'} // Disable if bot is not stopped
         >
           {isTestMode ? 'Enabled' : 'Disabled'}
         </button>
-        {!isTestMode && (
-          <span className="ml-2 text-red-500 text-sm">Warning: Real trading enabled!</span>
+        {!isTestMode && status === 'stopped' && (
+          <span className="ml-2 text-red-400 text-xs italic">Warning: Real trading active!</span>
+        )}
+         {status !== 'stopped' && (
+          <span className="ml-2 text-yellow-400 text-xs italic">Stop bot to change mode</span>
         )}
       </div>
-      
-      <div className="flex items-center mb-4">
-        <span className="mr-2">Stop Loss (2.5%):</span>
-        <button 
-          onClick={() => setStopLossConfig({...stopLossConfig, enabled: !stopLossConfig.enabled})}
-          className={`px-3 py-1 rounded-md ${stopLossConfig.enabled ? 'bg-green-600' : 'bg-gray-600'}`}
-        >
-          {stopLossConfig.enabled ? 'Enabled' : 'Disabled'}
-        </button>
+
+      {/* Stop Loss Input */}
+      <div className="flex items-center">
+         <label htmlFor="stopLossPercentage" className="mr-2 text-gray-300 whitespace-nowrap">Stop Loss (%):</label>
+         <input
+            type="number"
+            id="stopLossPercentage"
+            name="stopLossPercentage"
+            value={stopLossPercentage}
+            onChange={handleSettingChange}
+            min="0"
+            step="0.1"
+            className="w-full bg-gray-700 text-white px-3 py-1 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
+            disabled={isRunning}
+         />
       </div>
-      
-      <div className="flex space-x-4 mb-6">
-        {!isRunning ? (
-          <button 
-            onClick={startBot}
-            className="bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-4 rounded"
-            // Use connected from useWallet
-            disabled={!isWalletConnected || !publicKey || isProcessingTrade} 
+
+       {/* Take Profit Input */}
+       <div className="flex items-center">
+         <label htmlFor="takeProfitPercentage" className="mr-2 text-gray-300 whitespace-nowrap">Take Profit (%):</label>
+         <input
+            type="number"
+            id="takeProfitPercentage"
+            name="takeProfitPercentage"
+            value={takeProfitPercentage}
+            onChange={handleSettingChange}
+            min="0"
+            step="0.1"
+            className="w-full bg-gray-700 text-white px-3 py-1 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
+            disabled={isRunning}
+         />
+      </div>
+
+       {/* Max Runs Input */}
+       <div className="flex items-center">
+         <label htmlFor="maxRuns" className="mr-2 text-gray-300 whitespace-nowrap">Max Runs:</label>
+         <input
+            type="number"
+            id="maxRuns"
+            name="maxRuns"
+            value={maxRuns}
+            onChange={handleSettingChange}
+            min="1"
+            step="1"
+            className="w-full bg-gray-700 text-white px-3 py-1 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
+            disabled={isRunning}
+         />
+      </div>
+
+       {/* Run Interval Input */}
+       <div className="flex items-center">
+         <label htmlFor="runIntervalMinutes" className="mr-2 text-gray-300 whitespace-nowrap">Run Interval (min):</label>
+         <input
+            type="number"
+            id="runIntervalMinutes"
+            name="runIntervalMinutes"
+            value={runIntervalMinutes}
+            onChange={handleSettingChange}
+            min="1"
+            step="1"
+            className="w-full bg-gray-700 text-white px-3 py-1 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
+            disabled={isRunning}
+         />
+      </div>
+
+       {/* Compound Capital Toggle */}
+       <div className="flex items-center">
+         <label htmlFor="compoundCapital" className="mr-2 text-gray-300">Compound Capital:</label>
+         <input
+            type="checkbox"
+            id="compoundCapital"
+            name="compoundCapital"
+            checked={compoundCapital}
+            onChange={handleSettingChange}
+            className="form-checkbox h-4 w-4 text-blue-600 bg-gray-700 border-gray-600 rounded focus:ring-blue-500 focus:ring-offset-gray-800"
+            disabled={isRunning}
+         />
+      </div>
+
+
+      {/* Start/Stop Buttons */}
+      <div className="flex space-x-4 pt-2">
+        {status !== 'running' && status !== 'analyzing' ? (
+          <button
+            onClick={handleStartBot}
+            className="flex-1 bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-4 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            disabled={!isWalletConnected || !publicKey || isProcessingTrade || status === 'error'}
           >
-            {isProcessingTrade ? 'Processing...' : 'Start Trading'}
+            {isProcessingTrade ? 'Processing...' : status === 'error' ? 'Error Occurred' : 'Start Trading'}
           </button>
         ) : (
-          <button 
-            onClick={stopBot}
-            className="bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-4 rounded"
+          <button
+            onClick={handleStopBot}
+            className="flex-1 bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-4 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             disabled={isProcessingTrade}
           >
-            Stop Trading
+            {status === 'analyzing' ? 'Stop Analysis' : 'Stop Trading'}
           </button>
         )}
       </div>
-      
-      {isRunning && (
-        <div className="bg-gray-900 p-4 rounded-md">
-          <div className="flex items-center">
-            <div className="w-3 h-3 bg-green-500 rounded-full mr-2 animate-pulse"></div>
-            <span>Bot is running with {strategyParams.type} strategy</span>
+
+      {/* Status Indicator */}
+      {status !== 'stopped' && (
+        <div className="bg-gray-900 p-3 rounded-md text-center">
+          <div className="flex items-center justify-center">
+            <div className={`w-3 h-3 rounded-full mr-2 ${
+                status === 'running' ? 'bg-green-500 animate-pulse' :
+                status === 'analyzing' ? 'bg-yellow-500 animate-pulse' :
+                status === 'error' ? 'bg-red-500' : 'bg-gray-500' // Should not happen if not stopped
+            }`}></div>
+            <span className="text-sm text-gray-300">
+                Bot status: <span className="font-medium">{status}</span>
+                {status === 'running' && ` (${strategyType})`}
+            </span>
           </div>
         </div>
       )}
-      
-      {stopLossTriggered && (
-        <div className="mt-4 bg-red-900/50 p-4 rounded-md">
+
+       {/* Error Message Display */}
+       {status === 'error' && errorMessage && ( // Access errorMessage directly from store state
+         <div className="mt-4 bg-red-900/50 p-3 rounded-md text-center">
+             <p className="text-red-300 text-sm">{errorMessage}</p> {/* Access errorMessage directly */}
+         </div>
+       )}
+
+
+      {/* Stop Loss Trigger Message */}
+      {stopLossTriggeredUI && (
+        <div className="mt-4 bg-red-900/50 p-3 rounded-md">
           <div className="flex items-center">
             <div className="w-3 h-3 bg-red-500 rounded-full mr-2"></div>
-            <span className="text-red-300">{stopLossMessage}</span>
+            <span className="text-red-300 text-sm">{stopLossMessageUI}</span>
           </div>
         </div>
       )}
-      
+
+      {/* Active Positions Display - Reads from Zustand */}
       {activePositions.length > 0 && (
         <div className="mt-4">
-          <h3 className="font-bold mb-2">Active Positions</h3>
-          <div className="bg-gray-900 p-3 rounded-md">
+          <h3 className="font-bold mb-2 text-white">Active Positions</h3>
+          <div className="bg-gray-900 p-3 rounded-md max-h-40 overflow-y-auto">
             {activePositions.map((position) => (
-              <div key={position.id} className="border-b border-gray-700 py-2 last:border-0">
-                <div className="grid grid-cols-2 gap-2 text-sm">
-                  <div>Pair: {position.pair}</div>
-                  <div>Action: <span className={position.action === 'buy' ? 'text-green-500' : 'text-red-500'}>{position.action}</span></div>
-                  <div>Amount: {position.amount}</div>
-                  <div>Entry Price: ${position.entryPrice.toFixed(2)}</div>
-                  <div>Stop Loss: ${(position.action === 'buy' 
-                    ? position.entryPrice * (1 - stopLossConfig.percentage / 100) 
-                    : position.entryPrice * (1 + stopLossConfig.percentage / 100)).toFixed(2)}</div>
-                  <div>Time: {new Date(position.timestamp).toLocaleTimeString()}</div>
+              <div key={position.id} className="border-b border-gray-700 py-2 last:border-0 text-xs">
+                <div className="grid grid-cols-2 gap-1">
+                  <div className="text-gray-400">Pair: <span className="text-gray-200">{position.pair}</span></div>
+                  <div className="text-gray-400">Action: <span className={position.action === 'buy' ? 'text-green-400' : 'text-red-400'}>{position.action}</span></div>
+                  <div className="text-gray-400">Amount: <span className="text-gray-200">{position.amount}</span></div>
+                  <div className="text-gray-400">Entry: <span className="text-gray-200">${position.entryPrice.toFixed(4)}</span></div>
+                  <div className="text-gray-400">Stop Loss: <span className="text-gray-200">${(position.action === 'buy'
+                    ? position.entryPrice * (1 - stopLossPercentage / 100)
+                    : position.entryPrice * (1 + stopLossPercentage / 100)).toFixed(4)}</span></div>
+                  <div className="text-gray-400">Time: <span className="text-gray-200">{new Date(position.timestamp).toLocaleTimeString()}</span></div>
                 </div>
               </div>
             ))}
           </div>
         </div>
       )}
-      
+
+      {/* Last Trade Display - Reads from Zustand */}
       {lastTrade && (
         <div className="mt-4">
-          <h3 className="font-bold mb-2">Last Trade</h3>
-          <div className="bg-gray-900 p-3 rounded-md">
-            <div className="grid grid-cols-2 gap-2 text-sm">
-              <div>Pair: {lastTrade.pair}</div>
-              <div>Action: <span className={lastTrade.action === 'buy' ? 'text-green-500' : 'text-red-500'}>{lastTrade.action}</span></div>
-              <div>Amount: {lastTrade.amount}</div>
-              <div>Price: ${lastTrade.price}</div>
-              <div>Status: {lastTrade.success ? 'Success' : 'Failed'}</div>
-              <div>Time: {new Date(lastTrade.timestamp).toLocaleTimeString()}</div>
-              {lastTrade.signature && (
+          <h3 className="font-bold mb-2 text-white">Last Trade</h3>
+          <div className="bg-gray-900 p-3 rounded-md text-xs">
+            <div className="grid grid-cols-2 gap-1">
+              <div className="text-gray-400">Pair: <span className="text-gray-200">{lastTrade.pair}</span></div>
+              <div className="text-gray-400">Action: <span className={lastTrade.action === 'buy' ? 'text-green-400' : 'text-red-400'}>{lastTrade.action}</span></div>
+              <div className="text-gray-400">Amount: <span className="text-gray-200">{lastTrade.amount}</span></div>
+              {/* Format price for display */}
+              <div className="text-gray-400">Price: <span className="text-gray-200">${Number(lastTrade.price).toFixed(4)}</span></div>
+              <div className="text-gray-400">Status: <span className={lastTrade.success ? 'text-green-400' : 'text-red-400'}>{lastTrade.success ? 'Success' : 'Failed'}</span></div>
+              <div className="text-gray-400">Time: <span className="text-gray-200">{new Date(lastTrade.timestamp).toLocaleTimeString()}</span></div>
+              {lastTrade.signature && !lastTrade.signature.startsWith('sim') && (
                 <div className="col-span-2">
-                  <a 
-                    href={`https://solscan.io/tx/${lastTrade.signature}`} 
-                    target="_blank" 
+                  <a
+                    href={`https://solscan.io/tx/${lastTrade.signature}`}
+                    target="_blank"
                     rel="noopener noreferrer"
                     className="text-blue-400 hover:underline"
                   >
@@ -557,39 +660,47 @@ const BotControl = ({ strategyParams }: { strategyParams: StrategyParams }) => {
                   </a>
                 </div>
               )}
+               {lastTrade.error && (
+                 <div className="col-span-2 text-red-400">Error: {lastTrade.error}</div>
+               )}
             </div>
           </div>
         </div>
       )}
-      
+
+      {/* Recent Trades Display - Reads from Zustand */}
       {tradeHistory.length > 0 && (
         <div className="mt-4">
-          <h3 className="font-bold mb-2">Recent Trades</h3>
-          <div className="max-h-40 overflow-y-auto">
-            {tradeHistory.map((trade, index) => (
-              <div key={index} className="bg-gray-900 p-2 rounded-md mb-2 text-xs">
-                <div className="flex justify-between">
-                  <span>{trade.pair} - {trade.action.toUpperCase()}</span>
-                  <span>{new Date(trade.timestamp).toLocaleTimeString()}</span>
+          <h3 className="font-bold mb-2 text-white">Recent Trades</h3>
+          <div className="max-h-60 overflow-y-auto space-y-2">
+            {tradeHistory.map((trade) => (
+              <div key={trade.id || trade.timestamp} className="bg-gray-900 p-2 rounded-md text-xs">
+                <div className="flex justify-between items-center mb-1">
+                  <span className="font-medium text-gray-300">{trade.pair} - {trade.action.toUpperCase()}</span>
+                  <span className="text-gray-400">{new Date(trade.timestamp).toLocaleTimeString()}</span>
                 </div>
-                <div className="flex justify-between">
-                  <span>{trade.amount} @ ${trade.price}</span>
-                  <span className={trade.success ? 'text-green-500' : 'text-red-500'}>
+                <div className="flex justify-between items-center">
+                   {/* Format price for display */}
+                  <span className="text-gray-300">{trade.amount} @ ${Number(trade.price).toFixed(4)}</span>
+                  <span className={`font-semibold ${trade.success ? 'text-green-500' : 'text-red-500'}`}>
                     {trade.success ? 'Success' : 'Failed'}
                   </span>
                 </div>
-                {trade.signature && (
+                {trade.signature && !trade.signature.startsWith('sim') && (
                   <div className="mt-1">
-                    <a 
-                      href={`https://solscan.io/tx/${trade.signature}`} 
-                      target="_blank" 
+                    <a
+                      href={`https://solscan.io/tx/${trade.signature}`}
+                      target="_blank"
                       rel="noopener noreferrer"
                       className="text-blue-400 hover:underline text-xs"
                     >
-                      View on Solscan
+                      View Tx
                     </a>
                   </div>
                 )}
+                 {trade.error && (
+                   <div className="mt-1 text-red-400 text-xs">Error: {trade.error}</div>
+                 )}
               </div>
             ))}
           </div>
