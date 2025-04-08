@@ -150,34 +150,14 @@ export default function PerformanceDashboard() {
     const intervalId = setInterval(fetchWalletBalance, 30000);
     
     return () => clearInterval(intervalId);
-  }, [isWalletConnected, walletPublicKey]);
-  
-  // Fetch current SOL price - TODO: This needs replacement with a reliable source and better PnL logic
-  // For now, we remove the setPositions call as positions come from the store.
-  // The PnL calculation should ideally happen closer to where the price is fetched/updated.
-  useEffect(() => {
-    const fetchSolPrice = async () => {
-      // ... fetch logic remains the same ...
-      try {
-         const response = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd');
-         const data = await response.json();
-         if (data && data.solana && data.solana.usd) {
-             const currentSolPrice = data.solana.usd;
-             // TODO: Update PnL for open positions in the store or calculate for display
-             // This requires iterating storeActivePositions and calculating PnL based on currentSolPrice
-             // For now, we just log the price.
-             console.log("Current SOL Price (CoinGecko):", currentSolPrice);
-             // setPositions(prevPositions => ... ); // Remove this line
-         }
-      } catch (error) {
-          console.error('Error fetching SOL price:', error);
-      }
-    };
+  }, [isWalletConnected, walletPublicKey, connection]); // Add connection to dependency array
 
-    fetchSolPrice();
-    const intervalId = setInterval(fetchSolPrice, 60000); // Fetch every minute
-    return () => clearInterval(intervalId);
-  }, []); // Empty dependency array means it runs once on mount and fetches periodically
+  // Remove the redundant CoinGecko price fetching useEffect
+  /*
+  useEffect(() => {
+    // ... removed fetchSolPrice logic ...
+  }, []);
+  */
 
   // Use settings from store for display where applicable
   // const { allocatedCapital, maxDrawdown, profitTarget, slippage } = settings; // Remove these if not in store yet

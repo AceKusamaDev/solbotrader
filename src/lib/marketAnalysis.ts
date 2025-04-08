@@ -1,5 +1,6 @@
 import { fetchGeckoTerminalOhlcv } from './marketData';
 import { EMA, RSI, MACD, BollingerBands } from 'technicalindicators';
+import { Position } from '@/lib/safetyFeatures'; // Import Position type
 
 // Define types (consider moving to a shared types file)
 interface OhlcvDataPoint {
@@ -209,35 +210,44 @@ export const checkTrendTrackerEntry = (
 
     console.log("Checking TrendTracker Entry Conditions...");
 
-    // --- Condition Checks ---
+    // --- Get Indicators ---
     const indicators = analysisResult.indicators;
-    if (!indicators || !indicators.dailyEMA || !indicators.hourlyRSI || !indicators.fifteenMinMACD) {
-        console.log("TrendTracker Reject: Missing required indicator data in analysis result.");
+    const fifteenMinIndicators = calculateIndicators(currentFifteenMinData); // Calculate 15min indicators
+
+    if (!indicators || !indicators.dailyEMA || !indicators.hourlyRSI || !fifteenMinIndicators.latestMacd || !fifteenMinIndicators.latestRsi) {
+        console.log("TrendTracker Reject: Missing required indicator data.");
         return false;
     }
 
     // 1. EMA Crossover Check (Daily) - Already confirmed by 'Uptrend' condition, but double-check
     const isDailyEMACrossedUp = indicators.dailyEMA.short && indicators.dailyEMA.long && indicators.dailyEMA.short > indicators.dailyEMA.long;
     if (!isDailyEMACrossedUp) {
-        console.log("TrendTracker Reject: Daily EMA check failed (should be confirmed by Uptrend condition).");
+        console.log("TrendTracker Reject: Daily EMA check failed.");
         return false;
     }
 
-    // 2. RSI Check (Hourly) - Already confirmed by 'Uptrend' condition logic (RSI > 50)
+    // 2. RSI Check (Hourly & 15-min)
+    // Hourly RSI > 50 (already checked in assessMarketStructure for Uptrend condition)
+    // 15-min RSI > 50 (confirming short-term momentum)
     if (!indicators.hourlyRSI || indicators.hourlyRSI <= 50) {
-         console.log(`TrendTracker Reject: Hourly RSI (${indicators.hourlyRSI}) check failed (should be > 50).`);
+         console.log(`TrendTracker Reject: Hourly RSI (${indicators.hourlyRSI}) not > 50.`);
          return false;
     }
+     if (!fifteenMinIndicators.latestRsi || fifteenMinIndicators.latestRsi <= 50) {
+         console.log(`TrendTracker Reject: 15min RSI (${fifteenMinIndicators.latestRsi}) not > 50.`);
+         return false;
+     }
 
-    // 3. MACD Check (15-min) - MACD line should be above signal line
-    const macdCheck = indicators.fifteenMinMACD;
+    // 3. MACD Check (15-min) - MACD line > signal line
+    const macdCheck = fifteenMinIndicators.latestMacd; // Use 15min MACD
     if (!macdCheck || !macdCheck.MACD || !macdCheck.signal || macdCheck.MACD <= macdCheck.signal) {
         console.log("TrendTracker Reject: 15min MACD line not above signal line.");
         return false;
     }
 
     // 4. Support/Resistance Break Check (Placeholder)
-    // TODO: Implement S/R detection and check for break above resistance
+    // TODO: Implement S/R detection (e.g., using pivot points or recent highs/lows on daily/hourly)
+    // TODO: Check if current price (e.g., currentFifteenMinData[currentFifteenMinData.length - 1].close) broke above a resistance level
     console.log("TrendTracker S/R Break Check: Placeholder - Not Implemented.");
 
     // 5. Volume Confirmation (Placeholder)
@@ -302,4 +312,55 @@ export const checkSmartRangeEntry = (
     // If all implemented checks pass:
     console.log("SmartRange Scout Entry Conditions Met (Based on available checks).");
     return true; // Allow entry if BB and RSI conditions met (pending S/R)
+};
+
+/**
+ * Checks if TrendTracker exit conditions are met.
+ * @param position The active position.
+ * @param analysisResult The result from assessMarketStructure.
+ * @param currentFifteenMinData The latest 15-min candle data.
+ */
+export const checkTrendTrackerExit = (
+    position: Position, // Need position info (entry price, etc.)
+    analysisResult: AnalysisResult,
+    currentFifteenMinData: OhlcvDataPoint[]
+): boolean => {
+    if (analysisResult.condition === 'Ranging' || analysisResult.condition === 'Unclear') {
+        console.log("TrendTracker Exit: Market condition changed from Uptrend.");
+        return true; // Exit if market is no longer clearly trending up
+    }
+
+    // TODO: Implement specific TrendTracker exit logic
+    // - Trailing Stop Loss?
+    // - Price crosses below a key EMA (e.g., daily EMA long)?
+    // - RSI drops below a certain level (e.g., 50 or 40)?
+    // - MACD crossover downwards?
+
+    console.log("Checking TrendTracker Exit Conditions (Placeholder)...");
+    return false; // Placeholder - don't exit yet
+};
+
+/**
+ * Checks if SmartRange Scout exit conditions are met.
+ * @param position The active position.
+ * @param analysisResult The result from assessMarketStructure.
+ * @param currentFifteenMinData The latest 15-min candle data.
+ */
+export const checkSmartRangeExit = (
+    position: Position, // Need position info (entry price, etc.)
+    analysisResult: AnalysisResult,
+    currentFifteenMinData: OhlcvDataPoint[]
+): boolean => {
+     if (analysisResult.condition === 'Uptrend' || analysisResult.condition === 'Unclear') {
+        console.log("SmartRange Exit: Market condition changed from Ranging.");
+        return true; // Exit if market is no longer clearly ranging
+    }
+
+    // TODO: Implement specific SmartRange Scout exit logic
+    // - Price reaches range high or midpoint (needs range detection)?
+    // - RSI becomes overbought (e.g., > 70)?
+    // - Price breaks support (handled by SL)?
+
+    console.log("Checking SmartRange Exit Conditions (Placeholder)...");
+    return false; // Placeholder - don't exit yet
 };

@@ -16,6 +16,8 @@ import {
     assessMarketStructure,
     checkTrendTrackerEntry,
     checkSmartRangeEntry,
+    checkTrendTrackerExit, // Import exit check
+    checkSmartRangeExit,  // Import exit check
     AnalysisResult // Import AnalysisResult type
 } from '@/lib/marketAnalysis';
 
@@ -90,40 +92,58 @@ const BotControl = () => {
 
   // Effect to run initial analysis when bot starts
   useEffect(() => {
+    let isMounted = true; // Flag to check if component is still mounted
+
     const runInitialAnalysis = async () => {
-      if (status === 'analyzing') {
-        console.log("Starting initial market analysis...");
-        setIsProcessingTrade(true); // Indicate analysis is in progress
-        const poolAddress = currentPoolAddress ?? await findPoolAddress(pair); // Use cache or find
-        if (!poolAddress) {
-          setError(`Could not find pool address for pair: ${pair}`);
-          storeStopBot(); // Stop if pool not found
-          setIsProcessingTrade(false);
-          return;
-        }
-        if (!currentPoolAddress) setCurrentPoolAddress(poolAddress); // Store if newly found
+      // Check status *inside* async function again, ensure component still mounted
+      if (!isMounted || useBotStore.getState().status !== 'analyzing') return;
 
-        const result = await assessMarketStructure(poolAddress);
-        setAnalysisResult(result); // Store analysis result locally
-        setMarketCondition(result.condition); // Update store
+      console.log("Starting initial market analysis...");
+      setIsProcessingTrade(true);
+      const poolAddress = currentPoolAddress ?? await findPoolAddress(pair);
+      if (!isMounted) return; // Check if component unmounted during async call
 
-        if (result.condition === 'Unclear') {
-          console.log("Market condition unclear, bot will not start trading loop.");
-           setError("Market condition unclear. Bot stopped.");
-           storeStopBot();
-        } else {
-          console.log(`Initial analysis complete. Market Condition: ${result.condition}. Starting trading loop.`);
-          setRunning(); // Set status to running to trigger the trading loop useEffect
-        }
-        setIsProcessingTrade(false);
+      if (!poolAddress) {
+        setError(`Could not find pool address for pair: ${pair}`);
+        storeStopBot();
+        if (isMounted) setIsProcessingTrade(false);
+        return;
       }
+      // Only set if it wasn't set before and component is mounted
+      if (!currentPoolAddress && isMounted) setCurrentPoolAddress(poolAddress);
+
+      const result = await assessMarketStructure(poolAddress);
+      if (!isMounted) return; // Check again
+
+      setAnalysisResult(result);
+      setMarketCondition(result.condition);
+
+      // Check status *before* setting state again, ensure component still mounted
+      if (isMounted && useBotStore.getState().status === 'analyzing') {
+          if (result.condition === 'Unclear') {
+            console.log("Market condition unclear, bot will not start trading loop.");
+            setError("Market condition unclear. Bot stopped.");
+            storeStopBot();
+          } else {
+            console.log(`Initial analysis complete. Market Condition: ${result.condition}. Starting trading loop.`);
+            setRunning(); // Set status to running
+          }
+      } else {
+          console.log("Status changed during analysis or component unmounted, aborting state update.");
+      }
+      if (isMounted) setIsProcessingTrade(false);
     };
-    // Only run analysis when status explicitly becomes 'analyzing'
+
     if (status === 'analyzing') {
         runInitialAnalysis();
     }
+
+    // Cleanup function to set the flag when component unmounts
+    return () => {
+        isMounted = false;
+    };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [status, pair]); // Rerun analysis if status becomes 'analyzing' or pair changes
+  }, [status, pair]); // Keep dependencies minimal: status triggers it, pair might require re-analysis if changed while analyzing
 
 
   // Effect to handle the main trading loop based on status
@@ -139,14 +159,55 @@ const BotControl = () => {
         }
         setIsProcessingTrade(true); // Lock for this iteration
 
-        // --- Check SL/TP First ---
-        // Read activePositions directly inside the loop to get the latest state
-        const currentActivePositions = useBotStore.getState().activePositions;
+        // --- Check Strategy Exit / SL / TP ---
         let positionClosed = false;
+        const currentActivePositions = useBotStore.getState().activePositions; // Get latest positions
         if (currentActivePositions.length > 0) {
-            positionClosed = await checkPositionsSLTP(); // Check returns true if a position was closed
-             if (useBotStore.getState().activePositions.length === 0 && currentActivePositions.length > 0) { // Check if SL/TP closed the position
-                 console.log("Position closed by SL/TP.");
+            const position = currentActivePositions[0]; // Assuming only one position at a time
+            const latestFifteenMinData = await fetchGeckoTerminalOhlcv(currentPoolAddress!, 'minute', 15, 10); // Fetch recent data for exit checks
+
+            if (latestFifteenMinData && analysisResult) {
+                let shouldExit = false;
+                // 1. Check Strategy Exit Condition
+                if (strategyType === 'TrendTracker') {
+                    shouldExit = checkTrendTrackerExit(position, analysisResult, latestFifteenMinData);
+                    if (shouldExit) console.log("TrendTracker exit condition met.");
+                } else if (strategyType === 'SmartRange Scout') {
+                    shouldExit = checkSmartRangeExit(position, analysisResult, latestFifteenMinData);
+                     if (shouldExit) console.log("SmartRange Scout exit condition met.");
+                }
+
+                // 2. Execute Exit if Strategy Condition Met
+                if (shouldExit) {
+                    console.log("Attempting strategy-based exit...");
+                    const currentPrice = latestFifteenMinData[latestFifteenMinData.length - 1]?.close ?? position.entryPrice; // Fallback price
+                    // Similar logic to SL/TP execution, but with 'Strategy Exit' reason
+                    // TODO: Refactor exit logic into a reusable function
+                    const exitAction = position.action === 'buy' ? 'sell' : 'buy';
+                    if (isTestMode) {
+                         const exitTrade: Trade = { id: `strat-exit-sim-${Date.now()}`, timestamp: new Date().toISOString(), pair: position.pair, action: exitAction, amount: position.amount, price: currentPrice, strategy: `${strategyType} Exit`, success: true, signature: 'sim_strat_exit' };
+                         addTradeHistory(exitTrade);
+                         removePosition(position.id);
+                         positionClosed = true;
+                    } else {
+                         // Execute real exit trade
+                         // ... (Add real trade execution logic similar to handleStopLoss/handleTakeProfit) ...
+                         console.log("Real strategy exit execution - NOT IMPLEMENTED"); // Placeholder
+                    }
+                }
+
+                // 3. If Strategy didn't exit, check SL/TP
+                if (!positionClosed) {
+                    positionClosed = await checkPositionsSLTP(); // Check returns true if SL/TP closed the position
+                }
+
+            } else {
+                 console.warn("Could not fetch recent 15min data or analysis result missing for exit/SL/TP check.");
+            }
+
+             // Check if position was closed by any means during this iteration
+             if (useBotStore.getState().activePositions.length === 0 && currentActivePositions.length > 0) {
+                 console.log("Position closed.");
                  // TODO: Handle run count incrementing here?
                  setIsProcessingTrade(false);
                  return; // Skip trying to open a new trade this iteration
@@ -199,9 +260,9 @@ const BotControl = () => {
         setIsProcessingTrade(false); // Re-enable buttons
       };
 
-      // Initial run + Interval
-      loopLogic(); // Run immediately on start
+      // Set interval only, don't run immediately to potentially avoid initial render loop
       tradingIntervalRef.current = setInterval(loopLogic, runIntervalMinutes * 60 * 1000);
+      console.log(`Trading loop interval set for every ${runIntervalMinutes} minutes.`);
 
     } else if (status !== 'running' && tradingIntervalRef.current) {
       // Clear interval if status is not 'running' anymore
@@ -209,9 +270,9 @@ const BotControl = () => {
       tradingIntervalRef.current = null;
       console.log("Trading loop stopped.");
     }
-    // Dependencies: Trigger loop start/stop based on status, pool address, and analysis result.
-    // Other settings like isTestMode and runIntervalMinutes are read inside the loop.
-  }, [status, currentPoolAddress, analysisResult, runIntervalMinutes, isTestMode, pair, action, strategyType, amount]); // Removed activePositions.length
+    // Dependencies: Only restart the interval if the bot status changes to 'running',
+    // or if the essential context (pool address, initial analysis) changes.
+  }, [status, currentPoolAddress, analysisResult]); // Minimal dependencies
 
 
   // --- Event Handlers ---
@@ -438,25 +499,33 @@ const BotControl = () => {
   // Fetch current price (using GeckoTerminal 1-min candle close)
   const fetchCurrentPrice = async (fetchPair: string): Promise<number | null> => {
     // console.log(`Fetching current price for ${fetchPair} using GeckoTerminal`); // Reduce verbosity
+    // Ensure pool address is available (fetched during initial analysis or cached)
     const poolAddress = currentPoolAddress ?? await findPoolAddress(fetchPair);
     if (!poolAddress) {
-        console.error("Cannot fetch price, pool address unknown.");
+        console.error(`Cannot fetch price for ${fetchPair}, pool address unknown.`);
+        setError(`Pool address unknown for ${fetchPair}`); // Update error state
         return null;
     }
-    if (poolAddress !== currentPoolAddress) setCurrentPoolAddress(poolAddress); // Cache if found now
+    // Update local cache if address was just found
+    if (poolAddress !== currentPoolAddress) setCurrentPoolAddress(poolAddress);
 
     try {
-        const latestCandle = await fetchGeckoTerminalOhlcv(poolAddress, 'minute', 1, 1);
-        const price = latestCandle?.[0]?.close;
-        if (price) {
-            // console.log(`Latest close price: ${price}`);
+        // Fetch the single latest 1-minute candle
+        const latestCandleData = await fetchGeckoTerminalOhlcv(poolAddress, 'minute', 1, 1);
+        // The fetch function returns data oldest first, so the last element is the latest
+        // But since we limit to 1, it should be the first element after reversing.
+        const price = latestCandleData?.[0]?.close;
+
+        if (typeof price === 'number') {
+            // console.log(`Latest close price for ${fetchPair}: ${price}`);
             return price;
         } else {
-            console.warn("Could not get latest close price from GeckoTerminal.");
+            console.warn(`Could not get latest close price for ${fetchPair} from GeckoTerminal.`);
             return null;
         }
     } catch (error: any) {
-      console.error('Error fetching current price from GeckoTerminal:', error.message);
+      console.error(`Error fetching current price for ${fetchPair} from GeckoTerminal:`, error.message);
+      setError(`Failed to fetch price: ${error.message}`);
       return null;
     }
   };
