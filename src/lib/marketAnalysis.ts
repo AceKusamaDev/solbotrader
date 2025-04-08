@@ -57,9 +57,9 @@ const fetchAllTimeframes = async (poolAddress: string): Promise<{
   try {
     // Fetch data concurrently respecting rate limits (limiter is in fetch function)
     const [dailyData, hourlyData, fifteenMinData] = await Promise.all([
-      fetchGeckoTerminalOhlcv(poolAddress, 'day', 1, DAILY_CANDLE_COUNT), // Remove undefined network arg
-      fetchGeckoTerminalOhlcv(poolAddress, 'hour', 1, HOURLY_CANDLE_COUNT), // Remove undefined network arg
-      fetchGeckoTerminalOhlcv(poolAddress, 'minute', 15, FIFTEEN_MIN_CANDLE_COUNT), // Remove undefined network arg
+      fetchGeckoTerminalOhlcv(poolAddress, 'day', 1, DAILY_CANDLE_COUNT),
+      fetchGeckoTerminalOhlcv(poolAddress, 'hour', 1, HOURLY_CANDLE_COUNT),
+      fetchGeckoTerminalOhlcv(poolAddress, 'minute', 15, FIFTEEN_MIN_CANDLE_COUNT),
     ]);
 
     console.log(`Fetched Daily: ${dailyData?.length}, Hourly: ${hourlyData?.length}, 15-Min: ${fifteenMinData?.length}`);
@@ -85,10 +85,11 @@ const calculateIndicators = (data: OhlcvDataPoint[]) => {
   }
 
   const closePrices = data.map(d => d.close);
-  const highPrices = data.map(d => d.high);
-  const lowPrices = data.map(d => d.low);
-  const openPrices = data.map(d => d.open);
-  const volume = data.map(d => d.volume);
+  // Keep other price arrays if needed for other indicators
+  // const highPrices = data.map(d => d.high);
+  // const lowPrices = data.map(d => d.low);
+  // const openPrices = data.map(d => d.open);
+  // const volume = data.map(d => d.volume);
 
   // Ensure enough data points for calculations
   const indicators = {
@@ -111,7 +112,7 @@ const calculateIndicators = (data: OhlcvDataPoint[]) => {
     // Add other indicators as needed
   };
 
-  // Return the latest values or the full series as needed
+  // Return the latest values
   return {
      latestEmaShort: indicators.emaShort[indicators.emaShort.length - 1],
      latestEmaLong: indicators.emaLong[indicators.emaLong.length - 1],
@@ -139,7 +140,6 @@ export const assessMarketStructure = async (poolAddress: string): Promise<Analys
   }
 
   // --- Calculate Indicators ---
-  // Note: Ensure data is sorted oldest to newest before passing to indicators
   const dailyIndicators = calculateIndicators(daily);
   const hourlyIndicators = calculateIndicators(hourly);
   const fifteenMinIndicators = calculateIndicators(fifteenMin);
@@ -149,67 +149,44 @@ export const assessMarketStructure = async (poolAddress: string): Promise<Analys
   console.log("15-Min Indicators:", fifteenMinIndicators);
 
 
-  // --- Market Condition Logic (Placeholder - Needs Implementation) ---
-  // This is where the core logic from Task 1c goes.
-  // Analyze trends, S/R, indicator confirmations across timeframes.
-
-  // Remove duplicate declaration
-  // let determinedCondition: MarketCondition = 'Unclear';
-
   // --- Market Condition Logic ---
-  // Refined logic based on multi-timeframe analysis principles
-
   let determinedCondition: MarketCondition = 'Unclear'; // Default to Unclear
 
   // --- Trend Analysis (Daily & Hourly) ---
   const dailyEmaShort = dailyIndicators.latestEmaShort;
   const dailyEmaLong = dailyIndicators.latestEmaLong;
-  const hourlyEmaShort = hourlyIndicators.latestEmaShort; // Calculate hourly EMAs if needed, or use daily as primary trend
-  const hourlyEmaLong = hourlyIndicators.latestEmaLong;
   const hourlyRsi = hourlyIndicators.latestRsi;
 
   const isDailyTrendingUp = dailyEmaShort && dailyEmaLong && dailyEmaShort > dailyEmaLong;
-  const isDailyTrendingDown = dailyEmaShort && dailyEmaLong && dailyEmaShort < dailyEmaLong;
-  // Optional: Add hourly EMA confirmation
-  const isHourlyTrendingUp = hourlyEmaShort && hourlyEmaLong && hourlyEmaShort > hourlyEmaLong;
 
   // --- Ranging Analysis (Hourly Bollinger Bands & RSI) ---
   const hourlyBbands = hourlyIndicators.latestBbands;
   let isHourlyRanging = false;
   if (hourlyBbands && hourlyRsi) {
       const bandWidth = (hourlyBbands.upper - hourlyBbands.lower) / hourlyBbands.middle;
-      // Example: Consider it ranging if BB width is below a threshold (e.g., 0.1 or 10%)
-      // and RSI is oscillating around 50 (e.g., between 40-60)
-      if (bandWidth < 0.1 && hourlyRsi > 40 && hourlyRsi < 60) {
+      if (bandWidth < 0.1 && hourlyRsi > 40 && hourlyRsi < 60) { // Example thresholds
           isHourlyRanging = true;
       }
-      // Alternative ranging check: Price crossing the middle band frequently, low volatility. Needs more data points.
   }
 
   // --- Determine Condition ---
   if (isDailyTrendingUp) {
-      // Primary trend is up. Check hourly confirmation.
       if (hourlyRsi && hourlyRsi > 50) { // Confirming with RSI > 50
           determinedCondition = 'Uptrend';
       } else {
-          // Daily trend up, but hourly confirmation weak. Could be pullback or weakening trend.
-          determinedCondition = 'Unclear'; // Treat as unclear for now
+          determinedCondition = 'Unclear'; // Weak confirmation
       }
   } else if (isHourlyRanging) {
-      // If not clearly trending up, check if it's ranging based on hourly BBands/RSI
       determinedCondition = 'Ranging';
   } else {
-      // Default to Unclear if neither strong uptrend nor clear ranging is detected.
-      // Could add specific 'Downtrend' logic here if needed later.
-      determinedCondition = 'Unclear';
+      determinedCondition = 'Unclear'; // Default if not clearly Uptrend or Ranging
   }
 
   console.log(`Determined Market Condition: ${determinedCondition}`);
 
   return {
       condition: determinedCondition,
-      // Optionally return key indicator values used for the decision
-      indicators: {
+      indicators: { // Pass calculated indicators for strategy checks
           dailyEMA: { short: dailyIndicators.latestEmaShort, long: dailyIndicators.latestEmaLong },
           hourlyRSI: hourlyIndicators.latestRsi,
           fifteenMinMACD: fifteenMinIndicators.latestMacd,
@@ -230,13 +207,46 @@ export const checkTrendTrackerEntry = (
 ): boolean => {
     if (analysisResult.condition !== 'Uptrend') return false;
 
-    // TODO: Implement specific TrendTracker entry logic based on Task 1c/1e
-    // - EMA crossovers (using analysisResult.indicators.dailyEMA?)
-    // - RSI + MACD alignment (using hourly/15min indicators?)
-    // - SR breaks with volume (needs S/R detection + volume analysis)
+    console.log("Checking TrendTracker Entry Conditions...");
 
-    console.log("Checking TrendTracker Entry Conditions (Placeholder)...");
-    // Placeholder: Return true for now if condition is Uptrend
+    // --- Condition Checks ---
+    const indicators = analysisResult.indicators;
+    if (!indicators || !indicators.dailyEMA || !indicators.hourlyRSI || !indicators.fifteenMinMACD) {
+        console.log("TrendTracker Reject: Missing required indicator data in analysis result.");
+        return false;
+    }
+
+    // 1. EMA Crossover Check (Daily) - Already confirmed by 'Uptrend' condition, but double-check
+    const isDailyEMACrossedUp = indicators.dailyEMA.short && indicators.dailyEMA.long && indicators.dailyEMA.short > indicators.dailyEMA.long;
+    if (!isDailyEMACrossedUp) {
+        console.log("TrendTracker Reject: Daily EMA check failed (should be confirmed by Uptrend condition).");
+        return false;
+    }
+
+    // 2. RSI Check (Hourly) - Already confirmed by 'Uptrend' condition logic (RSI > 50)
+    if (!indicators.hourlyRSI || indicators.hourlyRSI <= 50) {
+         console.log(`TrendTracker Reject: Hourly RSI (${indicators.hourlyRSI}) check failed (should be > 50).`);
+         return false;
+    }
+
+    // 3. MACD Check (15-min) - MACD line should be above signal line
+    const macdCheck = indicators.fifteenMinMACD;
+    if (!macdCheck || !macdCheck.MACD || !macdCheck.signal || macdCheck.MACD <= macdCheck.signal) {
+        console.log("TrendTracker Reject: 15min MACD line not above signal line.");
+        return false;
+    }
+
+    // 4. Support/Resistance Break Check (Placeholder)
+    // TODO: Implement S/R detection and check for break above resistance
+    console.log("TrendTracker S/R Break Check: Placeholder - Not Implemented.");
+
+    // 5. Volume Confirmation (Placeholder)
+    // TODO: Implement volume analysis on breakout
+    console.log("TrendTracker Volume Check: Placeholder - Not Implemented.");
+
+
+    // If all implemented checks pass:
+    console.log("TrendTracker Entry Conditions Met (Based on available checks).");
     return true;
 };
 
@@ -252,16 +262,44 @@ export const checkSmartRangeEntry = (
     if (analysisResult.condition !== 'Ranging') return false;
 
     // TODO: Implement specific SmartRange Scout entry logic based on Task 1c/1e
-    // - Bollinger/RSI oversold at support (needs S/R detection + BBands/RSI values)
-    // - Optional oscillator confirmation
+    // - Optional oscillator confirmation (e.g., Stochastic) - TBD
 
-    console.log("Checking SmartRange Scout Entry Conditions (Placeholder)...");
-     // Placeholder: Check if 15min RSI is oversold
-     const fifteenMinIndicators = calculateIndicators(currentFifteenMinData);
-     if (fifteenMinIndicators.latestRsi && fifteenMinIndicators.latestRsi < 35) { // Example threshold
-         console.log("SmartRange Scout: 15min RSI oversold condition met.");
-         return true;
-     }
+    console.log("Checking SmartRange Scout Entry Conditions...");
 
-    return false;
+    // --- Condition Checks ---
+    // Calculate indicators specifically for the 15-min timeframe provided
+    const fifteenMinIndicators = calculateIndicators(currentFifteenMinData);
+    const currentPrice = currentFifteenMinData[currentFifteenMinData.length - 1]?.close;
+    const bbands = fifteenMinIndicators.latestBbands; // Get latest BBands values { middle, upper, lower, pb }
+    const rsi = fifteenMinIndicators.latestRsi; // Get latest RSI value
+
+    if (!currentPrice || !bbands || !rsi) {
+        console.log("SmartRange Reject: Insufficient 15min indicator data.");
+        return false;
+    }
+
+    // 1. Bollinger Band Check: Price near or below lower band
+    // Consider adding a small tolerance, e.g., price <= bbands.lower * 1.001
+    const isNearLowerBand = currentPrice <= bbands.lower;
+    if (!isNearLowerBand) {
+        console.log(`SmartRange Reject: Price (${currentPrice.toFixed(4)}) not near lower BB (${bbands.lower.toFixed(4)}).`);
+        return false;
+    }
+
+    // 2. RSI Check: RSI oversold
+    const isRSIOversold = rsi < 35; // Use a configurable threshold?
+    if (!isRSIOversold) {
+        console.log(`SmartRange Reject: 15min RSI (${rsi.toFixed(2)}) not oversold (< 35).`);
+        return false;
+    }
+
+    // 3. Support Level Confirmation (Placeholder)
+    // TODO: Implement S/R detection based on daily/hourly data
+    // TODO: Check if currentPrice is within a tolerance range of a detected support level
+    console.log("SmartRange Support Check: Placeholder - Not Implemented.");
+
+
+    // If all implemented checks pass:
+    console.log("SmartRange Scout Entry Conditions Met (Based on available checks).");
+    return true; // Allow entry if BB and RSI conditions met (pending S/R)
 };

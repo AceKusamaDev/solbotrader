@@ -156,23 +156,32 @@ const BotControl = () => {
         // --- Re-assess Market Condition Periodically? (Optional) ---
         // Could add logic here, e.g., every N loops
 
-        // --- Check Entry Conditions ---
+        // --- Check Entry Conditions (only if no active position) ---
         let shouldEnterTrade = false;
-        // Only check entry if no position exists *after* SL/TP check
         if (useBotStore.getState().activePositions.length === 0) {
-            // Fetch latest 15-min data for entry check
-            const fifteenMinData = await fetchGeckoTerminalOhlcv(currentPoolAddress, 'minute', 15, 10); // Fetch recent data
+            console.log("No active position. Checking entry conditions...");
+            // Fetch latest 15-min data for entry check - Ensure pool address is valid
+            if (currentPoolAddress) {
+                const fifteenMinData = await fetchGeckoTerminalOhlcv(currentPoolAddress, 'minute', 15, 10); // Fetch recent data
 
-            if (fifteenMinData && analysisResult) { // Ensure analysisResult is still valid
-                 if (strategyType === 'TrendTracker') {
-                    shouldEnterTrade = checkTrendTrackerEntry(analysisResult, fifteenMinData);
-                 } else if (strategyType === 'SmartRange Scout') {
-                    shouldEnterTrade = checkSmartRangeEntry(analysisResult, fifteenMinData);
-                 }
+                if (fifteenMinData && analysisResult) { // Ensure analysisResult is still valid
+                    if (strategyType === 'TrendTracker') {
+                        shouldEnterTrade = checkTrendTrackerEntry(analysisResult, fifteenMinData);
+                    } else if (strategyType === 'SmartRange Scout') {
+                        shouldEnterTrade = checkSmartRangeEntry(analysisResult, fifteenMinData);
+                    }
+                } else {
+                    console.warn("Could not fetch recent 15min data or analysis result missing for entry check.");
+                }
             } else {
-                console.warn("Could not fetch recent 15min data for entry check.");
+                 console.error("Cannot check entry conditions: Pool address is null.");
+                 setError("Pool address missing, cannot check entry conditions.");
+                 // Consider stopping the bot here? storeStopBot();
             }
+        } else {
+             console.log("Position already active, skipping entry check.");
         }
+
 
         // --- Execute Trade ---
         if (shouldEnterTrade) {
