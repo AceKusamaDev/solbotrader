@@ -32,6 +32,18 @@ const BotControl = () => {
   const isProcessingRef = useRef(false); // Ref to track actual processing lock (prevents loops)
   const [currentPoolAddress, setCurrentPoolAddress] = useState<string | null>(null); // Cache pool address
   const [analysisResult, setAnalysisResult] = useState<AnalysisResult | null>(null); // Store last analysis
+  // Refs to hold stable values for callbacks
+  const analysisResultRef = useRef<AnalysisResult | null>(analysisResult);
+  const poolAddressRef = useRef<string | null>(currentPoolAddress);
+
+  // Effects to keep refs in sync with state
+  useEffect(() => {
+    analysisResultRef.current = analysisResult;
+  }, [analysisResult]);
+
+  useEffect(() => {
+    poolAddressRef.current = currentPoolAddress;
+  }, [currentPoolAddress]);
 
   // --- Get state and actions from Zustand store ---
   const {
@@ -198,7 +210,7 @@ const BotControl = () => {
   const checkPositionsSLTP = useCallback(async (): Promise<boolean> => {
        const currentActivePositions = useBotStore.getState().activePositions;
        const currentPair = useBotStore.getState().settings.pair;
-       const poolAddr = currentPoolAddress; // Use local state cache
+       const poolAddr = poolAddressRef.current; // Use ref cache
 
        if (currentActivePositions.length === 0 || !poolAddr) return false;
        console.log("Checking SL/TP...");
@@ -225,7 +237,7 @@ const BotControl = () => {
            console.warn("Could not fetch current price for SL/TP check.");
        }
        return false; // No SL/TP triggered for any position
-   }, [currentPoolAddress, fetchCurrentPrice, handleTakeProfit, handleStopLoss]); // Dependencies are stable callbacks/state
+   }, [fetchCurrentPrice, handleTakeProfit, handleStopLoss]); // Dependencies are stable callbacks/state
 
   const simulateTradeAction = useCallback((simAction: 'buy' | 'sell') => {
     const { amount: currentAmount, pair: currentPair, strategyType: currentStrategy } = useBotStore.getState().settings;
@@ -249,7 +261,7 @@ const BotControl = () => {
 
   const executeRealTradeAction = useCallback(async (tradeAction: 'buy' | 'sell') => {
       const { amount: currentAmount, pair: currentPair, strategyType: currentStrategy } = useBotStore.getState().settings;
-      const poolAddr = currentPoolAddress; // Use local state cache
+      const poolAddr = poolAddressRef.current; // Use ref cache
 
       if (isProcessingRef.current || !poolAddr) {
           console.log("Execute trade skipped: Already processing or pool address missing.");
@@ -301,7 +313,7 @@ const BotControl = () => {
           isProcessingRef.current = false;
           if (isMountedRef.current) setIsProcessingTrade(false);
       }
-  }, [currentPoolAddress, executeTradeWithStrategy, publicKey, sendTransaction, addTradeHistory, addPosition, setError, isMountedRef]); // Stable dependencies
+  }, [executeTradeWithStrategy, publicKey, sendTransaction, addTradeHistory, addPosition, setError, isMountedRef]); // Stable dependencies
 
   // Define loopLogic using useCallback
   const loopLogic = useCallback(async () => {
@@ -314,9 +326,9 @@ const BotControl = () => {
       isProcessingRef.current = true;
       if (isMountedRef.current) setIsProcessingTrade(true); // UI state
 
-      // Read necessary local state *inside* the function
-      const currentAnalysis = analysisResult;
-      const poolAddr = currentPoolAddress;
+      // Read necessary values from REFS *inside* the function
+      const currentAnalysis = analysisResultRef.current; // Read from ref
+      const poolAddr = poolAddressRef.current; // Read from ref
       let shouldEnterTrade = false;
 
       try {
@@ -379,9 +391,9 @@ const BotControl = () => {
           if (isMountedRef.current) setIsProcessingTrade(false); // UI state
       }
   // Dependencies: Only stable functions/actions it calls directly.
-  // Reads local state (analysisResult, currentPoolAddress) directly.
+  // Reads values from refs (analysisResultRef, poolAddressRef) directly.
   // Reads store state (settings, activePositions) via getState().
-  }, [setError, storeStopBot, checkPositionsSLTP, simulateTradeAction, executeRealTradeAction, isMountedRef, analysisResult, currentPoolAddress]); // Added back analysisResult/currentPoolAddress
+  }, [setError, storeStopBot, checkPositionsSLTP, simulateTradeAction, executeRealTradeAction, isMountedRef]); // REMOVED analysisResult, currentPoolAddress
 
 
   // Main Lifecycle Effect
